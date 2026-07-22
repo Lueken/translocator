@@ -116,8 +116,17 @@ fn save_installation(path: String, meta: installations::InstallationMeta) -> Res
 
 /// Delete an installation folder. The UI confirms first.
 #[tauri::command]
-fn delete_installation(path: String) -> Result<(), String> {
-    installations::delete(&PathBuf::from(path))
+fn delete_installation(installations_dir: String, path: String) -> Result<(), String> {
+    let dir = PathBuf::from(&path);
+    // Containment: only ever remove a real installation that lives directly
+    // inside the configured installations folder, never an arbitrary path handed
+    // to the command.
+    if dir.parent() != Some(PathBuf::from(&installations_dir).as_path())
+        || !installations::looks_like_install(&dir)
+    {
+        return Err("refused to delete: not an installation in the configured folder".into());
+    }
+    installations::delete(&dir)
 }
 
 /// Reveal an installation's folder in the OS file browser.

@@ -14,6 +14,54 @@ use tauri::Emitter;
 
 const MODDB: &str = "https://mods.vintagestory.at/api";
 
+/// A mod download must be HTTPS and served from the official domain. The URL
+/// comes from the ModDB API response, so we don't blindly fetch wherever it
+/// points; this stops a compromised or spoofed API answer from redirecting a
+/// download to an attacker's host.
+fn is_allowed_mod_url(url: &str) -> bool {
+    let rest = match url.strip_prefix("https://") {
+        Some(r) => r,
+        None => return false,
+    };
+    let host = rest.split(['/', '?', '#']).next().unwrap_or("");
+    let host = host.rsplit('@').next().unwrap_or(host); // drop any userinfo
+    let host = host.split(':').next().unwrap_or(host); // drop any port
+    host == "vintagestory.at" || host.ends_with(".vintagestory.at")
+}
+
+/// Reduce an API-supplied filename to a safe basename that can only ever land
+/// inside `Mods/`: no path separators, no parent refs, `.zip` only. Anything
+/// suspicious falls back to a name we construct ourselves.
+fn safe_zip_name(raw: &str, modidstr: &str, modversion: &str) -> String {
+    let base = raw.rsplit(['/', '\\']).next().unwrap_or("").trim();
+    let looks_safe = !base.is_empty()
+        && !base.contains("..")
+        && base
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | ' ' | '(' | ')' | '+'))
+        && base.to_ascii_lowercase().ends_with(".zip");
+    if looks_safe {
+        return base.to_string();
+    }
+    let clean = |s: &str| -> String {
+        s.chars()
+            .map(|c| if c.is_ascii_alphanumeric() || c == '.' || c == '-' { c } else { '_' })
+            .collect()
+    };
+    format!("{}-{}.zip", clean(modidstr), clean(modversion))
+}
+
+/// The first bytes of every PKZip file. VS mods are zips; checking this stops a
+/// wrong URL or an HTML error page from being saved into Mods/ as a `.zip`.
+fn looks_like_zip(path: &Path) -> bool {
+    use std::io::Read;
+    let mut buf = [0u8; 2];
+    std::fs::File::open(path)
+        .and_then(|mut f| f.read_exact(&mut buf))
+        .map(|_| &buf == b"PK")
+        .unwrap_or(false)
+}
+
 // ---------------------------------------------------------------- search
 
 #[derive(Deserialize)]
@@ -157,11 +205,13 @@ async fn download_release(
     let mods_dir = install_dir.join("Mods");
     std::fs::create_dir_all(&mods_dir).map_err(|e| e.to_string())?;
 
-    let fname = if rel.filename.is_empty() {
-        format!("{modidstr}-{}.zip", rel.modversion)
-    } else {
-        rel.filename.clone()
-    };
+    if !is_allowed_mod_url(&rel.mainfile) {
+        return Err(format!(
+            "refused mod download from an unexpected URL ({}); expected an https vintagestory.at address",
+            rel.mainfile
+        ));
+    }
+    let fname = safe_zip_name(&rel.filename, modidstr, &rel.modversion);
     let tmp = mods_dir.join(format!(".{fname}.part"));
 
     let resp = client
@@ -198,6 +248,13 @@ async fn download_release(
     }
     file.flush().map_err(|e| e.to_string())?;
     drop(file);
+
+    // Reject anything that isn't actually a zip (a redirect to an HTML error
+    // page, a truncated body) before it ever lands in Mods/.
+    if !looks_like_zip(&tmp) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err("downloaded file is not a valid mod zip; discarded".into());
+    }
 
     // Swap only after a complete download: remove the old zip, move temp in.
     if let Some(old) = old_filename {

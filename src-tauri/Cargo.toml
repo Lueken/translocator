@@ -33,3 +33,6 @@ futures = "0.3"
 rusqlite = { version = "0.32", features = ["bundled"] }
 md-5 = "0.10"
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Security_Cryptography", "Win32_System_Memory", "Win32_Foundation"] }
+

@@ -599,7 +599,7 @@ function App() {
   async function deleteInstallation(card: InstallationCard) {
     setConfirmDelete(null);
     try {
-      await invoke("delete_installation", { path: card.path });
+      await invoke("delete_installation", { installationsDir, path: card.path });
       say(`Deleted installation ${card.meta.name}.`);
       toast(`Deleted ${card.meta.name}`);
       if (target === card.path) setTarget("");
