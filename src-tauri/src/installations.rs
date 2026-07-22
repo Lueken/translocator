@@ -1,0 +1,172 @@
+//! Translocator's own installation store.
+//!
+//! Each installation folder (its `--dataPath`) carries a `translocator.json`
+//! holding the metadata VS Launcher and StoryForge keep: display name, pinned
+//! game version, launch params, env vars, backup preferences, and playtime.
+//! Existing folders are ADOPTED in place on first read — we write our metadata
+//! file alongside the game's own files, so nothing is moved, lost, or
+//! duplicated. This is what turns Translocator from a reader of someone else's
+//! installations into the owner of its own.
+
+use crate::mods;
+use serde::{Deserialize, Serialize};
+use std::path::Path;
+use std::time::SystemTime;
+
+const META_FILE: &str = "translocator.json";
+
+fn default_compression() -> u8 {
+    6
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct InstallationMeta {
+    pub name: String,
+    /// Pinned VS version. Metadata in Phase A (used for update-compatibility);
+    /// Phase B ties it to a downloaded game version for launch.
+    #[serde(default)]
+    pub version: String,
+    #[serde(default)]
+    pub start_params: String,
+    /// "K=V, K2=V2" — same freeform shape VS Launcher uses.
+    #[serde(default)]
+    pub env_vars: String,
+    /// Take a backup before launching.
+    #[serde(default)]
+    pub auto_backup: bool,
+    #[serde(default = "default_compression")]
+    pub compression: u8,
+    #[serde(default)]
+    pub icon: String,
+    #[serde(default)]
+    pub favorite: bool,
+    /// ms since epoch; 0 = never played.
+    #[serde(default)]
+    pub last_played: u64,
+    /// total seconds played through Translocator.
+    #[serde(default)]
+    pub total_time_played: u64,
+}
+
+impl Default for InstallationMeta {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            version: String::new(),
+            start_params: String::new(),
+            env_vars: String::new(),
+            auto_backup: false,
+            compression: 6,
+            icon: String::new(),
+            favorite: false,
+            last_played: 0,
+            total_time_played: 0,
+        }
+    }
+}
+
+fn folder_display_name(dir: &Path) -> String {
+    dir.file_name()
+        .map(|n| n.to_string_lossy().replace(['-', '_'], " ").trim().to_string())
+        .unwrap_or_default()
+}
+
+pub fn read_meta(dir: &Path) -> Option<InstallationMeta> {
+    let text = std::fs::read_to_string(dir.join(META_FILE)).ok()?;
+    serde_json::from_str(&text).ok()
+}
+
+pub fn write_meta(dir: &Path, meta: &InstallationMeta) -> Result<(), String> {
+    let text = serde_json::to_string_pretty(meta).map_err(|e| e.to_string())?;
+    std::fs::write(dir.join(META_FILE), text).map_err(|e| e.to_string())
+}
+
+/// Read the install's metadata, or adopt the folder in place by writing a
+/// default derived from the folder name + the launcher's default version.
+pub fn import_or_read(dir: &Path, default_version: &str) -> InstallationMeta {
+    if let Some(m) = read_meta(dir) {
+        return m;
+    }
+    let meta = InstallationMeta {
+        name: folder_display_name(dir),
+        version: default_version.to_string(),
+        ..Default::default()
+    };
+    let _ = write_meta(dir, &meta); // adopt in place
+    meta
+}
+
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// Record a completed play session: stamp last_played and add to playtime.
+pub fn record_play(dir: &Path, elapsed_secs: u64) {
+    let mut meta = read_meta(dir).unwrap_or_else(|| InstallationMeta {
+        name: folder_display_name(dir),
+        ..Default::default()
+    });
+    meta.last_played = now_ms();
+    meta.total_time_played += elapsed_secs;
+    let _ = write_meta(dir, &meta);
+}
+
+#[derive(Serialize)]
+pub struct InstallationCard {
+    pub path: String,
+    pub meta: InstallationMeta,
+    pub mod_count: usize,
+    pub has_session: bool,
+}
+
+/// A subfolder is treated as an installation only if it looks like a VS data
+/// folder. This keeps `list` from adopting (and writing metadata into) unrelated
+/// directories if the installations path is ever misconfigured.
+fn looks_like_install(dir: &Path) -> bool {
+    dir.join("Mods").is_dir()
+        || dir.join("clientsettings.json").is_file()
+        || dir.join("Saves").is_dir()
+        || dir.join(META_FILE).is_file()
+}
+
+/// Every installation under `installations_dir`, adopting any not yet tracked.
+/// Sorted favorites-first, then by name.
+pub fn list(installations_dir: &Path, default_version: &str) -> Result<Vec<InstallationCard>, String> {
+    let mut cards = Vec::new();
+    for entry in std::fs::read_dir(installations_dir).map_err(|e| format!("read_dir failed: {e}"))? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+            let path = entry.path();
+            if !looks_like_install(&path) {
+                continue;
+            }
+            let meta = import_or_read(&path, default_version);
+            let mod_count = mods::list_mod_files(&path).len();
+            let has_session = crate::session::read_back_session(&path).is_some();
+            cards.push(InstallationCard {
+                path: path.to_string_lossy().into_owned(),
+                meta,
+                mod_count,
+                has_session,
+            });
+        }
+    }
+    cards.sort_by(|a, b| {
+        b.meta
+            .favorite
+            .cmp(&a.meta.favorite)
+            .then(a.meta.name.to_lowercase().cmp(&b.meta.name.to_lowercase()))
+    });
+    Ok(cards)
+}
+
+/// Delete an installation folder outright. The UI guards this with a confirm.
+pub fn delete(path: &Path) -> Result<(), String> {
+    if !path.exists() {
+        return Ok(());
+    }
+    std::fs::remove_dir_all(path).map_err(|e| format!("delete failed: {e}"))
+}

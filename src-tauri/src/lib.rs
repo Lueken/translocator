@@ -8,6 +8,7 @@
 mod auth;
 mod backup;
 mod deps;
+mod installations;
 mod launch;
 mod models;
 mod mods;
@@ -84,33 +85,35 @@ fn logout(app: AppHandle) -> Result<(), String> {
     store::clear_account(&app)
 }
 
-#[derive(Serialize)]
-struct InstallInfo {
-    name: String,
-    path: String,
-    /// Whether this install already has a well-formed session written in.
-    has_session: bool,
+/// Every installation under `installations_dir`, with its metadata (adopting any
+/// folder we don't yet track). `default_version` is used only when adopting a
+/// folder that has no metadata yet.
+#[tauri::command]
+fn list_installations(
+    installations_dir: String,
+    default_version: String,
+) -> Result<Vec<installations::InstallationCard>, String> {
+    installations::list(&PathBuf::from(installations_dir), &default_version)
 }
 
-/// List each subdirectory of `installations_dir` as an installation (its
-/// `--dataPath`). Mirrors how VS Launcher lays out its installations folder.
+/// Persist edited installation metadata (rename, params, env, backup prefs,
+/// favorite, icon).
 #[tauri::command]
-fn list_installs(installations_dir: String) -> Result<Vec<InstallInfo>, String> {
-    let base = PathBuf::from(&installations_dir);
-    let mut out = Vec::new();
-    for entry in std::fs::read_dir(&base).map_err(|e| format!("read_dir failed: {e}"))? {
-        let entry = entry.map_err(|e| e.to_string())?;
-        if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
-            let path = entry.path();
-            out.push(InstallInfo {
-                name: entry.file_name().to_string_lossy().into_owned(),
-                has_session: session::read_back_session(&path).is_some(),
-                path: path.to_string_lossy().into_owned(),
-            });
-        }
-    }
-    out.sort_by(|a, b| a.name.cmp(&b.name));
-    Ok(out)
+fn save_installation(path: String, meta: installations::InstallationMeta) -> Result<(), String> {
+    installations::write_meta(&PathBuf::from(path), &meta)
+}
+
+/// Delete an installation folder. The UI confirms first.
+#[tauri::command]
+fn delete_installation(path: String) -> Result<(), String> {
+    installations::delete(&PathBuf::from(path))
+}
+
+/// Reveal an installation's folder in the OS file browser.
+#[tauri::command]
+fn open_install_folder(app: AppHandle, path: String) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+    app.opener().open_path(path, None::<&str>).map_err(|e| e.to_string())
 }
 
 /// Result of a play attempt.
@@ -128,14 +131,14 @@ enum PlayResult {
     },
 }
 
-/// The crown jewel: validate -> stamp -> launch -> read-back.
+/// The crown jewel: validate -> stamp -> launch -> read-back. Launch params,
+/// env vars, and auto-backup come from the installation's own metadata.
 #[tauri::command]
 async fn play(
     app: AppHandle,
     game_exe: String,
     install_dir: String,
     account: Account,
-    start_params: Option<String>,
 ) -> Result<PlayResult, String> {
     // 1. Validate the stored session with the account server BEFORE trusting it.
     let v = auth::client_validate(&account.uid, &account.sessionkey).await?;
@@ -145,12 +148,25 @@ async fn play(
         });
     }
 
-    // 2. Stamp the (validated) session into the install's clientsettings.json.
     let dir = PathBuf::from(&install_dir);
+    let meta = installations::read_meta(&dir).unwrap_or_default();
+
+    // 2. Optional backup before playing, then stamp the validated session.
+    if meta.auto_backup {
+        let _ = backup::backup_mods(&dir);
+    }
     session::stamp_session(&dir, &account)?;
 
-    // 3. Launch and wait for the game to close.
-    let exit_code = launch::launch_and_wait(&game_exe, &dir, start_params.as_deref()).await?;
+    // 3. Launch with the install's params/env and wait; time the session.
+    let started = std::time::Instant::now();
+    let exit_code = launch::launch_and_wait(
+        &game_exe,
+        &dir,
+        Some(&meta.start_params),
+        Some(&meta.env_vars),
+    )
+    .await?;
+    installations::record_play(&dir, started.elapsed().as_secs());
 
     // 4. Read back the session the game left behind. If it rotated, capture and
     //    persist it so we never re-stamp a stale key on the next launch.
@@ -269,7 +285,10 @@ pub fn run() {
             get_account,
             logout,
             open_url,
-            list_installs,
+            list_installations,
+            save_installation,
+            delete_installation,
+            open_install_folder,
             play,
             search_mods,
             install_mod,

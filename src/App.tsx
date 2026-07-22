@@ -18,7 +18,19 @@ type LoginOutcome =
   | { status: "success"; account: Account }
   | { status: "needsTotp"; prelogintoken: string; reason?: string | null }
   | { status: "failed"; reason: string };
-type InstallInfo = { name: string; path: string; has_session: boolean };
+type InstallationMeta = {
+  name: string;
+  version: string;
+  start_params: string;
+  env_vars: string;
+  auto_backup: boolean;
+  compression: number;
+  icon: string;
+  favorite: boolean;
+  last_played: number;
+  total_time_played: number;
+};
+type InstallationCard = { path: string; meta: InstallationMeta; mod_count: number; has_session: boolean };
 type PlayResult =
   | { status: "needsRelogin"; reason: string }
   | { status: "played"; exit_code: number; rotated: boolean; account: Account };
@@ -59,7 +71,24 @@ const entryStatus = (u: ModUpdate): { cls: string; label: string } => {
   const rel = u.newer.find((r) => r.modversion === u.latest_compatible);
   return rel?.compat === "exact" ? { cls: "ok", label: "Compatible" } : { cls: "warn", label: "Should work" };
 };
-const displayName = (s: string) => s.replace(/[-_]+/g, " ").trim();
+const fmtPlaytime = (secs: number) => {
+  if (!secs) return "never played";
+  const h = Math.floor(secs / 3600);
+  const m = Math.floor((secs % 3600) / 60);
+  if (h) return `${h}h ${m}m played`;
+  return m ? `${m}m played` : "under a minute";
+};
+const fmtLastPlayed = (ms: number) => {
+  if (!ms) return "";
+  const diff = Date.now() - ms;
+  const min = Math.floor(diff / 60000);
+  if (min < 1) return "just now";
+  if (min < 60) return `${min}m ago`;
+  const hr = Math.floor(min / 60);
+  if (hr < 24) return `${hr}h ago`;
+  const d = Math.floor(hr / 24);
+  return d < 30 ? `${d}d ago` : new Date(ms).toLocaleDateString();
+};
 const stripHtml = (s: string) =>
   s
     .replace(/<br\s*\/?>/gi, "\n")
@@ -152,7 +181,10 @@ function App() {
   const [prelogintoken, setPrelogintoken] = useState<string | null>(null);
 
   const [account, setAccount] = useState<Account | null>(null);
-  const [installs, setInstalls] = useState<InstallInfo[]>([]);
+  const [installs, setInstalls] = useState<InstallationCard[]>([]);
+  const [editing, setEditing] = useState<InstallationCard | null>(null);
+  const [draft, setDraft] = useState<InstallationMeta | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState<InstallationCard | null>(null);
   const [busy, setBusy] = useState(false);
   const [log, setLog] = useState<string[]>([]);
   const [target, setTarget] = useState<string>("");
@@ -222,6 +254,9 @@ function App() {
       setPins(loadPins(target));
       setUpdates([]);
       setChecked(null);
+      // the selected install's pinned version drives update-compatibility
+      const card = installs.find((i) => i.path === target);
+      if (card?.meta.version) setGameVersion(card.meta.version);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [target]);
@@ -264,11 +299,38 @@ function App() {
   }
   async function refreshInstalls() {
     try {
-      const list = await invoke<InstallInfo[]>("list_installs", { installationsDir });
+      const list = await invoke<InstallationCard[]>("list_installations", { installationsDir, defaultVersion: gameVersion });
       setInstalls(list);
       say(`Found ${list.length} installation(s).`);
     } catch (e) {
       say(`Error listing installs: ${e}`);
+    }
+  }
+  async function saveInstallation(path: string, meta: InstallationMeta) {
+    await invoke("save_installation", { path, meta });
+    if (path === target && meta.version) setGameVersion(meta.version);
+    await refreshInstalls();
+  }
+  async function toggleFavorite(card: InstallationCard) {
+    await saveInstallation(card.path, { ...card.meta, favorite: !card.meta.favorite });
+  }
+  async function openFolder(path: string) {
+    try {
+      await invoke("open_install_folder", { path });
+    } catch (e) {
+      say(`Open folder error: ${e}`);
+    }
+  }
+  async function deleteInstallation(card: InstallationCard) {
+    setConfirmDelete(null);
+    try {
+      await invoke("delete_installation", { path: card.path });
+      say(`Deleted installation ${card.meta.name}.`);
+      toast(`Deleted ${card.meta.name}`);
+      if (target === card.path) setTarget("");
+      await refreshInstalls();
+    } catch (e) {
+      say(`Delete error: ${e}`);
     }
   }
   async function refreshInstalled(installDir: string) {
@@ -284,14 +346,15 @@ function App() {
     if (!account || !inst) return;
     setBusy(true);
     try {
-      say(`▶ ${inst.name}: validate → stamp → launch ...`);
-      const res = await invoke<PlayResult>("play", { gameExe, installDir: inst.path, account, startParams: null });
+      say(`▶ ${inst.meta.name}: validate → stamp → launch ...`);
+      const res = await invoke<PlayResult>("play", { gameExe, installDir: inst.path, account });
       if (res.status === "needsRelogin") {
         say(`✗ Session rejected by server (${res.reason}). Re-login needed.`);
         toast("Session expired. Sign in again on the Account screen.", undefined, false);
         setAccount(null);
       } else {
-        say(`■ ${inst.name} exited (code ${res.exit_code}).`);
+        say(`■ ${inst.meta.name} exited (code ${res.exit_code}).`);
+        await refreshInstalls(); // pick up new playtime
         if (res.rotated) {
           setAccount(res.account);
           say("↻ Game rotated the session; captured and saved the new key.");
@@ -310,7 +373,7 @@ function App() {
     setBusy(true);
     setProgress({ done: 0, total: installed.length });
     try {
-      const name = displayName(installs.find((i) => i.path === target)?.name ?? target);
+      const name = installs.find((i) => i.path === target)?.meta.name ?? target;
       say(`Checking updates for ${name} (game ${gameVersion}) ...`);
       const ups = await invoke<ModUpdate[]>("check_updates", { installDir: target, gameVersion });
       setUpdates(ups);
@@ -451,7 +514,7 @@ function App() {
     }
   }
   async function copyReport() {
-    const name = displayName(installs.find((i) => i.path === target)?.name ?? "installation");
+    const name = installs.find((i) => i.path === target)?.meta.name ?? "installation";
     const lines: string[] = [
       `# ${name} update report (${new Date().toISOString().slice(0, 10)})`,
       `${visibleUpdates.length} updates pending for game ${gameVersion}`,
@@ -564,7 +627,7 @@ function App() {
   ).length;
 
   const targetInfo = installs.find((i) => i.path === target);
-  const targetName = displayName(targetInfo?.name ?? "");
+  const targetName = targetInfo?.meta.name ?? "";
   const NAV: { id: View; label: string; count?: number }[] = [
     { id: "installations", label: "Installations", count: installs.length },
     { id: "updates", label: "Updates", count: updates.length || undefined },
@@ -700,7 +763,7 @@ function App() {
                 <div className="controls">
                   <select value={target} onChange={(e) => setTarget(e.target.value)}>
                     {installs.map((i) => (
-                      <option key={i.path} value={i.path}>{displayName(i.name)}</option>
+                      <option key={i.path} value={i.path}>{i.meta.name}</option>
                     ))}
                   </select>
                   <span className="pchip">Game <b>{gameVersion}</b></span>
@@ -809,19 +872,34 @@ function App() {
                     <button className="btn" onClick={() => setView("settings")}>Open Settings</button>
                   </div>
                 ) : (
-                  <div className="list">
+                  <div className="inst-grid">
                     {installs.map((inst) => (
-                      <div className="li" key={inst.path}>
-                        <span>
-                          <span className="nm">{displayName(inst.name)}</span>{" "}
-                          <span className="meta" style={{ color: inst.has_session ? "var(--ok)" : "var(--fg-faint)" }}>
-                            {inst.has_session ? "● session ready" : "○ no session"}
-                          </span>
-                        </span>
-                        <span style={{ display: "flex", gap: 10 }}>
-                          <button className="mini" onClick={() => { setTarget(inst.path); setView("updates"); }}>Updates</button>
-                          <button className="cta" disabled={!account || busy} onClick={() => doPlay(inst.path)}>Play</button>
-                        </span>
+                      <div className="inst-card" key={inst.path}>
+                        <button
+                          className={"fav" + (inst.meta.favorite ? " on" : "")}
+                          title={inst.meta.favorite ? "Unfavorite" : "Favorite"}
+                          onClick={() => toggleFavorite(inst)}
+                        >
+                          {inst.meta.favorite ? "★" : "☆"}
+                        </button>
+                        <div className="inst-ico">{inst.meta.icon || inst.meta.name[0]?.toUpperCase() || "?"}</div>
+                        <div className="inst-body">
+                          <div className="inst-name">{inst.meta.name}</div>
+                          <div className="inst-meta tab">
+                            {inst.meta.version || "—"} · {inst.mod_count} mod{inst.mod_count === 1 ? "" : "s"}
+                            {inst.has_session && <span style={{ color: "var(--ok)" }}> · ● session</span>}
+                          </div>
+                          <div className="inst-sub">
+                            {fmtPlaytime(inst.meta.total_time_played)}
+                            {inst.meta.last_played ? ` · ${fmtLastPlayed(inst.meta.last_played)}` : ""}
+                          </div>
+                          <div className="inst-actions">
+                            <button className="cta" disabled={!account || busy} onClick={() => doPlay(inst.path)}>▶ Play</button>
+                            <button className="mini" onClick={() => { setTarget(inst.path); setView("updates"); }}>Updates</button>
+                            <button className="mini" onClick={() => { setEditing(inst); setDraft({ ...inst.meta }); }}>Edit</button>
+                            <button className="mini" onClick={() => openFolder(inst.path)}>Folder</button>
+                          </div>
+                        </div>
                       </div>
                     ))}
                   </div>
@@ -838,7 +916,7 @@ function App() {
                 <div><div className="eyebrow">Browse &amp; install</div><h1 className="title">Mods</h1></div>
                 <span className="grow" />
                 <select value={target} onChange={(e) => setTarget(e.target.value)}>
-                  {installs.map((i) => (<option key={i.path} value={i.path}>{displayName(i.name)}</option>))}
+                  {installs.map((i) => (<option key={i.path} value={i.path}>{i.meta.name}</option>))}
                 </select>
               </div>
               <div className="view">
@@ -932,6 +1010,52 @@ function App() {
             <div className="acts">
               <button className="btn" onClick={() => setConfirmRestore(null)}>Cancel</button>
               <button className="danger" onClick={() => doRestore(confirmRestore)}>Restore snapshot</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* edit installation modal */}
+      {editing && draft && (
+        <div className="overlay" onClick={() => setEditing(null)}>
+          <div className="modal wide" onClick={(e) => e.stopPropagation()}>
+            <h3>Edit installation</h3>
+            <label className="field"><span className="lab">Name</span>
+              <input value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })} /></label>
+            <label className="field"><span className="lab">Game version</span>
+              <input style={{ width: 140 }} value={draft.version} onChange={(e) => setDraft({ ...draft, version: e.target.value })} /></label>
+            <label className="field"><span className="lab">Start parameters</span>
+              <input value={draft.start_params} placeholder="e.g. --openWorld ..." onChange={(e) => setDraft({ ...draft, start_params: e.target.value })} /></label>
+            <label className="field"><span className="lab">Environment variables</span>
+              <input value={draft.env_vars} placeholder="KEY=value, KEY2=value2" onChange={(e) => setDraft({ ...draft, env_vars: e.target.value })} /></label>
+            <label className="field row-check">
+              <input type="checkbox" checked={draft.auto_backup} onChange={(e) => setDraft({ ...draft, auto_backup: e.target.checked })} />
+              <span>Back up mods before playing</span>
+            </label>
+            <div className="acts" style={{ justifyContent: "space-between" }}>
+              <button className="danger" onClick={() => { setConfirmDelete(editing); setEditing(null); }}>Delete…</button>
+              <span style={{ display: "flex", gap: 8 }}>
+                <button className="btn" onClick={() => setEditing(null)}>Cancel</button>
+                <button className="cta" onClick={async () => { await saveInstallation(editing.path, draft); setEditing(null); toast(`Saved ${draft.name}`); }}>Save</button>
+              </span>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* confirm delete installation */}
+      {confirmDelete && (
+        <div className="overlay" onClick={() => setConfirmDelete(null)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <h3>Delete this installation?</h3>
+            <p>
+              <b>{confirmDelete.meta.name}</b> and its entire folder — mods, saves, and config
+              ({confirmDelete.mod_count} mod{confirmDelete.mod_count === 1 ? "" : "s"}) — will be permanently deleted.
+              This cannot be undone.
+            </p>
+            <div className="acts">
+              <button className="btn" onClick={() => setConfirmDelete(null)}>Cancel</button>
+              <button className="danger" onClick={() => deleteInstallation(confirmDelete)}>Delete permanently</button>
             </div>
           </div>
         </div>

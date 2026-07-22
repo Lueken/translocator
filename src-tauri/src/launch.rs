@@ -9,17 +9,29 @@ use std::path::Path;
 use tokio::process::Command;
 
 /// Spawn the game pointed at `install_dir` and wait for it to exit.
-/// Returns the process exit code.
+/// `start_params` are extra CLI args; `env_vars` is a freeform "K=V, K2=V2"
+/// string (VS Launcher's format). Returns the process exit code.
 pub async fn launch_and_wait(
     game_exe: &str,
     install_dir: &Path,
     start_params: Option<&str>,
+    env_vars: Option<&str>,
 ) -> Result<i32, String> {
     let mut cmd = Command::new(game_exe);
     cmd.arg(format!("--dataPath={}", install_dir.display()));
     if let Some(sp) = start_params {
         for part in sp.split_whitespace() {
             cmd.arg(part);
+        }
+    }
+    if let Some(ev) = env_vars {
+        for pair in ev.split(',') {
+            if let Some((k, v)) = pair.split_once('=') {
+                let k = k.trim();
+                if !k.is_empty() {
+                    cmd.env(k, v.trim());
+                }
+            }
         }
     }
     let mut child = cmd
