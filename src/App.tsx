@@ -50,8 +50,22 @@ type ModUpdate = {
 };
 type BackupInfo = { id: string; kind: string; mod_count: number; size: number; created: string };
 type AvailableVersion = { version: string; url: string; md5: string; filesize: string; cached: boolean };
+type WorldInfo = {
+  path: string;
+  filename: string;
+  name: string;
+  seed: number | null;
+  playstyle: string;
+  world_height: number | null;
+  created_version: string;
+  last_version: string;
+  last_played: string;
+  size_bytes: number;
+  modified_ms: number;
+  parsed: boolean;
+};
 type Theme = "almanac" | "workshop" | "terminal";
-type View = "installations" | "updates" | "mods" | "account" | "settings";
+type View = "installations" | "updates" | "mods" | "worlds" | "account" | "settings";
 type Toast = { id: number; msg: string; undo?: () => void; ok?: boolean };
 
 const DEFAULT_INSTALLS = "C:\\Users\\31686\\AppData\\Roaming\\VSLInstallations";
@@ -97,6 +111,16 @@ const fmtLastPlayed = (ms: number) => {
   const d = Math.floor(hr / 24);
   return d < 30 ? `${d}d ago` : new Date(ms).toLocaleDateString();
 };
+// VS playstyle langcodes → readable labels (fallback: title-case the raw code).
+const PLAYSTYLE_LABEL: Record<string, string> = {
+  surviveandbuild: "Survival",
+  surviveandbuildhard: "Survival (Hard)",
+  wildernesssurvival: "Wilderness",
+  exploration: "Exploration",
+  creativebuilding: "Creative",
+};
+const playstyleLabel = (s: string) =>
+  s ? PLAYSTYLE_LABEL[s] ?? s.replace(/^\w/, (c) => c.toUpperCase()) : "";
 const stripHtml = (s: string) =>
   s
     .replace(/<br\s*\/?>/gi, "\n")
@@ -215,6 +239,10 @@ function App() {
   const [results, setResults] = useState<ModSummary[]>([]);
   const [installed, setInstalled] = useState<string[]>([]);
 
+  const [worlds, setWorlds] = useState<WorldInfo[]>([]);
+  const [worldsBusy, setWorldsBusy] = useState(false);
+  const [confirmDeleteWorld, setConfirmDeleteWorld] = useState<WorldInfo | null>(null);
+
   // game versions (shared dedup cache)
   const [availableVersions, setAvailableVersions] = useState<AvailableVersion[]>([]);
   const [versionProgress, setVersionProgress] = useState<{ version: string; phase: string; pct: number } | null>(null);
@@ -285,6 +313,11 @@ function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [target]);
 
+  useEffect(() => {
+    if (view === "worlds" && target) refreshWorlds(target);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [view, target]);
+
   const toggle = (modid: string) =>
     setExpanded((s) => {
       const n = new Set(s);
@@ -343,6 +376,46 @@ function App() {
       await invoke("open_install_folder", { path });
     } catch (e) {
       say(`Open folder error: ${e}`);
+    }
+  }
+  async function refreshWorlds(installDir: string) {
+    setWorldsBusy(true);
+    try {
+      setWorlds(await invoke<WorldInfo[]>("list_worlds", { installDir }));
+    } catch (e) {
+      say(`Worlds list error: ${e}`);
+      setWorlds([]);
+    } finally {
+      setWorldsBusy(false);
+    }
+  }
+  // Copy a single world into the install's backup folder before a risky change.
+  async function backupWorld(w: WorldInfo) {
+    setBusy(true);
+    try {
+      const dest = await invoke<string>("backup_world", { installDir: target, worldPath: w.path });
+      say(`Backed up "${w.name}" → ${dest}`);
+      toast(`Backed up "${w.name}"`);
+    } catch (e) {
+      say(`World backup error: ${e}`);
+      toast(`Backup failed: ${e}`, undefined, false);
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function deleteWorld(w: WorldInfo) {
+    setConfirmDeleteWorld(null);
+    setBusy(true);
+    try {
+      await invoke("delete_world", { installDir: target, worldPath: w.path });
+      say(`Deleted world "${w.name}".`);
+      toast(`Deleted "${w.name}"`);
+      await refreshWorlds(target);
+    } catch (e) {
+      say(`Delete world error: ${e}`);
+      toast(`Delete failed: ${e}`, undefined, false);
+    } finally {
+      setBusy(false);
     }
   }
   async function fetchVersions() {
@@ -755,6 +828,7 @@ function App() {
     { id: "installations", label: "Installations", count: installs.length },
     { id: "updates", label: "Updates", count: updates.length || undefined },
     { id: "mods", label: "Mods", count: installed.length || undefined },
+    { id: "worlds", label: "Worlds", count: worlds.length || undefined },
     { id: "account", label: "Account" },
     { id: "settings", label: "Settings" },
   ];
@@ -1085,6 +1159,66 @@ function App() {
             </>
           )}
 
+          {/* ---------------- WORLDS ---------------- */}
+          {view === "worlds" && (
+            <>
+              <div className="topbar">
+                <div><div className="eyebrow">Saves &amp; seeds</div><h1 className="title">Worlds</h1></div>
+                <span className="grow" />
+                <button className="btn" disabled={worldsBusy || !target} onClick={() => refreshWorlds(target)}>
+                  {worldsBusy ? "Reading…" : "Refresh"}
+                </button>
+                <select value={target} onChange={(e) => setTarget(e.target.value)}>
+                  {installs.map((i) => (<option key={i.path} value={i.path}>{i.meta.name}</option>))}
+                </select>
+              </div>
+              <div className="view">
+                {worlds.length === 0 ? (
+                  <p className="muted">
+                    {worldsBusy ? "Reading save files…" : `No worlds in ${targetName || "this installation"} yet. New worlds appear here once you create them in-game.`}
+                  </p>
+                ) : (
+                  <>
+                    <p className="muted" style={{ marginBottom: 12 }}>
+                      {worlds.length} world{worlds.length === 1 ? "" : "s"} in {targetName} · newest first
+                    </p>
+                    <div className="worlds">
+                      {worlds.map((w) => {
+                        const saveDir = w.path.slice(0, w.path.length - w.filename.length);
+                        return (
+                          <div className="world" key={w.path}>
+                            <div className="world-main">
+                              <div className="world-name">{w.name}</div>
+                              <div className="world-stats">
+                                {w.seed != null && <span className="wstat"><b>Seed</b><span className="tab">{w.seed}</span></span>}
+                                {w.playstyle && <span className="wstat"><b>Style</b>{playstyleLabel(w.playstyle)}</span>}
+                                {w.world_height != null && <span className="wstat"><b>Height</b><span className="tab">{w.world_height}</span></span>}
+                                {w.created_version && <span className="wstat"><b>Made on</b><span className="tab">{w.created_version}</span></span>}
+                                {w.last_version && w.last_version !== w.created_version && (
+                                  <span className="wstat"><b>Last on</b><span className="tab">{w.last_version}</span></span>
+                                )}
+                                <span className="wstat"><b>Size</b><span className="tab">{fmtBytes(w.size_bytes)}</span></span>
+                                <span className="wstat"><b>Modified</b>{fmtLastPlayed(w.modified_ms)}</span>
+                              </div>
+                            </div>
+                            <div className="world-acts">
+                              <button className="mini" disabled={busy} onClick={() => backupWorld(w)} title="Copy this world into the installation's backups folder">Back up</button>
+                              <button className="mini" onClick={() => openFolder(saveDir)} title="Open the Saves folder">Folder</button>
+                              <button className="mini danger-mini" disabled={busy} onClick={() => setConfirmDeleteWorld(w)} title="Permanently delete this world">Delete</button>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                    <p className="muted" style={{ marginTop: 14 }}>
+                      Back up copies the world into <span className="tab">.translocator-backups\worlds</span> inside the installation. Deleting a world is permanent — back it up first if unsure.
+                    </p>
+                  </>
+                )}
+              </div>
+            </>
+          )}
+
           {/* ---------------- ACCOUNT ---------------- */}
           {view === "account" && (
             <>
@@ -1175,6 +1309,24 @@ function App() {
             <div className="acts">
               <button className="btn" onClick={() => setConfirmRestore(null)}>Cancel</button>
               <button className="danger" onClick={() => doRestore(confirmRestore)}>Restore snapshot</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* confirm delete world modal */}
+      {confirmDeleteWorld && (
+        <div className="overlay" onClick={() => setConfirmDeleteWorld(null)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <h3>Delete this world?</h3>
+            <p>
+              <b>{confirmDeleteWorld.name}</b> ({fmtBytes(confirmDeleteWorld.size_bytes)}) will be permanently deleted from {targetName}. This cannot be undone.
+              {confirmDeleteWorld.seed != null && <> Its seed is <span className="tab">{confirmDeleteWorld.seed}</span>.</>}
+            </p>
+            <div className="acts">
+              <button className="btn" onClick={() => setConfirmDeleteWorld(null)}>Cancel</button>
+              <button className="btn" disabled={busy} onClick={() => { const w = confirmDeleteWorld; setConfirmDeleteWorld(null); backupWorld(w); }}>Back up first</button>
+              <button className="danger" disabled={busy} onClick={() => deleteWorld(confirmDeleteWorld)}>Delete world</button>
             </div>
           </div>
         </div>

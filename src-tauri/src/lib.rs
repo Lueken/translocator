@@ -16,6 +16,7 @@ mod session;
 mod store;
 mod updates;
 mod versions;
+mod worlds;
 
 use models::Account;
 use serde::Serialize;
@@ -369,6 +370,33 @@ async fn restore_backup(install_dir: String, id: String) -> Result<(), String> {
         .map_err(|e| format!("restore task failed: {e}"))?
 }
 
+/// Every world in an installation's `Saves` folder, with parsed metadata (seed,
+/// playstyle, height, versions) and filesystem facts. Reading the small
+/// savegame blobs is fast even for large worlds, but runs off the UI thread so a
+/// folder of many worlds never stutters.
+#[tauri::command]
+async fn list_worlds(install_dir: String) -> Result<Vec<worlds::WorldInfo>, String> {
+    tokio::task::spawn_blocking(move || worlds::list_worlds(&PathBuf::from(install_dir)))
+        .await
+        .map_err(|e| format!("worlds task failed: {e}"))
+}
+
+/// Copy a single world into the install's backup folder; returns the copy's path.
+#[tauri::command]
+async fn backup_world(install_dir: String, world_path: String) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || {
+        worlds::backup_world(&PathBuf::from(install_dir), &PathBuf::from(world_path))
+    })
+    .await
+    .map_err(|e| format!("backup task failed: {e}"))?
+}
+
+/// Permanently delete a world (guarded in the UI by a confirm).
+#[tauri::command]
+fn delete_world(install_dir: String, world_path: String) -> Result<(), String> {
+    worlds::delete_world(&PathBuf::from(install_dir), &PathBuf::from(world_path))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -399,7 +427,10 @@ pub fn run() {
             backup_mods,
             backup_install,
             list_backups,
-            restore_backup
+            restore_backup,
+            list_worlds,
+            backup_world,
+            delete_world
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

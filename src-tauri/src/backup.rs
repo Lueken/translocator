@@ -96,7 +96,8 @@ fn civil_from_epoch(secs: i64) -> (i64, u32, u32, u32, u32, u32) {
 }
 
 /// Sortable, filesystem-safe backup id like `20260721-153045-123` (UTC, ms).
-fn new_id() -> String {
+/// Shared with the worlds browser so world backups sort alongside install ones.
+pub(crate) fn new_id() -> String {
     let ms = epoch_millis();
     let secs = (ms / 1000) as i64;
     let millis = (ms % 1000) as u32;
