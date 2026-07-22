@@ -6,8 +6,11 @@
 //! brief. `fetch_full` is the shared detail fetch (releases with tags +
 //! changelogs) that the update view and donation lookup both build on.
 
+use futures::StreamExt;
 use serde::{Deserialize, Serialize};
+use std::io::Write;
 use std::path::Path;
+use tauri::Emitter;
 
 const MODDB: &str = "https://mods.vintagestory.at/api";
 
@@ -139,7 +142,12 @@ pub async fn fetch_full(client: &reqwest::Client, modidstr: &str) -> Result<ModF
 
 // ---------------------------------------------------------------- install
 
+/// Stream a release into `<install>/Mods/`, emitting "install-progress" as bytes
+/// arrive. Downloads to a temp `.part` file first, then swaps it into place and
+/// removes the old zip only after a complete download, so a failed or
+/// interrupted download never destroys the working copy.
 async fn download_release(
+    app: &tauri::AppHandle,
     client: &reqwest::Client,
     install_dir: &Path,
     modidstr: &str,
@@ -148,39 +156,82 @@ async fn download_release(
 ) -> Result<String, String> {
     let mods_dir = install_dir.join("Mods");
     std::fs::create_dir_all(&mods_dir).map_err(|e| e.to_string())?;
+
+    let fname = if rel.filename.is_empty() {
+        format!("{modidstr}-{}.zip", rel.modversion)
+    } else {
+        rel.filename.clone()
+    };
+    let tmp = mods_dir.join(format!(".{fname}.part"));
+
+    let resp = client
+        .get(&rel.mainfile)
+        .send()
+        .await
+        .map_err(|e| format!("download failed: {e}"))?;
+    let total = resp.content_length().unwrap_or(0);
+
+    let mut file = std::fs::File::create(&tmp).map_err(|e| e.to_string())?;
+    let mut stream = resp.bytes_stream();
+    let mut received: u64 = 0;
+    let mut last: u64 = 0;
+    while let Some(chunk) = stream.next().await {
+        let chunk = match chunk {
+            Ok(c) => c,
+            Err(e) => {
+                let _ = std::fs::remove_file(&tmp);
+                return Err(format!("download read failed: {e}"));
+            }
+        };
+        if let Err(e) = file.write_all(&chunk) {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(e.to_string());
+        }
+        received += chunk.len() as u64;
+        if received - last >= 32_768 || received == total {
+            last = received;
+            let _ = app.emit(
+                "install-progress",
+                serde_json::json!({ "modid": modidstr, "received": received, "total": total }),
+            );
+        }
+    }
+    file.flush().map_err(|e| e.to_string())?;
+    drop(file);
+
+    // Swap only after a complete download: remove the old zip, move temp in.
     if let Some(old) = old_filename {
         let p = mods_dir.join(old);
         if p.exists() {
             let _ = std::fs::remove_file(p);
         }
     }
-    let bytes = client
-        .get(&rel.mainfile)
-        .send()
-        .await
-        .map_err(|e| format!("download failed: {e}"))?
-        .bytes()
-        .await
-        .map_err(|e| format!("download read failed: {e}"))?;
-    let fname = if rel.filename.is_empty() {
-        format!("{modidstr}-{}.zip", rel.modversion)
-    } else {
-        rel.filename.clone()
-    };
-    std::fs::write(mods_dir.join(&fname), &bytes).map_err(|e| e.to_string())?;
+    let final_path = mods_dir.join(&fname);
+    if final_path.exists() {
+        let _ = std::fs::remove_file(&final_path);
+    }
+    std::fs::rename(&tmp, &final_path).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        format!("could not place downloaded mod: {e}")
+    })?;
     Ok(fname)
 }
 
 /// Install a mod's latest release (used by dependency resolution).
-pub async fn install_latest(install_dir: &Path, modidstr: &str) -> Result<String, String> {
+pub async fn install_latest(
+    app: &tauri::AppHandle,
+    install_dir: &Path,
+    modidstr: &str,
+) -> Result<String, String> {
     let client = reqwest::Client::new();
     let full = fetch_full(&client, modidstr).await?;
     let rel = full.releases.first().ok_or("mod has no releases")?;
-    download_release(&client, install_dir, modidstr, rel, None).await
+    download_release(app, &client, install_dir, modidstr, rel, None).await
 }
 
 /// Install a specific release version, replacing `old_filename` if given.
 pub async fn install_release(
+    app: &tauri::AppHandle,
     install_dir: &Path,
     modidstr: &str,
     modversion: &str,
@@ -194,7 +245,7 @@ pub async fn install_release(
         .find(|r| r.modversion == modversion)
         .ok_or_else(|| format!("release {modversion} not found for {modidstr}"))?
         .clone();
-    download_release(&client, install_dir, modidstr, &rel, old_filename).await
+    download_release(app, &client, install_dir, modidstr, &rel, old_filename).await
 }
 
 // ---------------------------------------------------------------- donations

@@ -161,6 +161,7 @@ function App() {
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [checked, setChecked] = useState<string | null>(null); // last-checked time
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
+  const [installing, setInstalling] = useState<{ modid: string; pct: number } | null>(null); // pct < 0 = indeterminate
   const [filter, setFilter] = useState("");
   const [menuFor, setMenuFor] = useState<string | null>(null);
   const [ignores, setIgnores] = useState<Record<string, string>>({});
@@ -201,8 +202,13 @@ function App() {
       await refreshInstalls();
     })();
     const un = listen<{ done: number; total: number }>("check-progress", (e) => setProgress(e.payload));
+    const un2 = listen<{ modid: string; received: number; total: number }>("install-progress", (e) => {
+      const { modid, received, total } = e.payload;
+      setInstalling({ modid, pct: total > 0 ? Math.min(100, (received / total) * 100) : -1 });
+    });
     return () => {
       un.then((f) => f());
+      un2.then((f) => f());
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -319,6 +325,7 @@ function App() {
   }
   async function installVersion(u: ModUpdate, modversion: string, opts?: { silentToast?: boolean }) {
     setBusy(true);
+    setInstalling({ modid: u.modid, pct: -1 });
     try {
       say(`Updating ${u.name} → ${modversion} ...`);
       const newFile = await invoke<string>("install_release", {
@@ -353,6 +360,7 @@ function App() {
       say(`Update error: ${e}`);
     } finally {
       setBusy(false);
+      setInstalling(null);
     }
   }
   async function updateAllLatest() {
@@ -370,6 +378,7 @@ function App() {
       say(`Updating ${targets.length} mod(s) to latest compatible ...`);
       let ok = 0;
       for (const u of targets) {
+        setInstalling({ modid: u.modid, pct: -1 });
         try {
           await invoke<string>("install_release", {
             installDir: target,
@@ -388,6 +397,7 @@ function App() {
       await checkUpdates();
     } finally {
       setBusy(false);
+      setInstalling(null);
     }
   }
   async function refreshBackups(installDir: string) {
@@ -588,12 +598,18 @@ function App() {
             <span className={"pill " + st.cls}><span className="d" />{st.label}</span>
             <button className="link" onClick={() => openModDB(u.assetid)}>ModDB ↗</button>
             <button
-              className={held ? "mini" : "cta"}
+              className={(held ? "mini" : "cta") + (installing?.modid === u.modid ? " installing" : "")}
               disabled={busy || held}
               title={held ? "This release targets a newer game version" : undefined}
               onClick={() => u.latest_compatible && installVersion(u, u.latest_compatible)}
             >
-              Update
+              <span className="cta-label">Update</span>
+              {installing?.modid === u.modid && (
+                <span
+                  className={"btn-prog" + (installing.pct < 0 ? " indet" : "")}
+                  style={installing.pct >= 0 ? { width: `${installing.pct}%` } : undefined}
+                />
+              )}
             </button>
             <span style={{ position: "relative" }}>
               <button className="mini more" onClick={() => setMenuFor(menuFor === u.modid ? null : u.modid)} title="More actions">⋯</button>

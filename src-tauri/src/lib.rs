@@ -184,8 +184,8 @@ async fn search_mods(text: String) -> Result<Vec<mods::ModSummary>, String> {
 
 /// Download a mod's latest release into the install's Mods folder.
 #[tauri::command]
-async fn install_mod(install_dir: String, modidstr: String) -> Result<String, String> {
-    mods::install_latest(&PathBuf::from(install_dir), &modidstr).await
+async fn install_mod(app: AppHandle, install_dir: String, modidstr: String) -> Result<String, String> {
+    mods::install_latest(&app, &PathBuf::from(install_dir), &modidstr).await
 }
 
 /// Author donation link(s) for a mod — the structured `donateurl` field if the
@@ -209,12 +209,14 @@ async fn check_updates(
 /// Install a specific release version, replacing the currently installed zip.
 #[tauri::command]
 async fn install_release(
+    app: AppHandle,
     install_dir: String,
     modidstr: String,
     modversion: String,
     old_filename: Option<String>,
 ) -> Result<String, String> {
     mods::install_release(
+        &app,
         &PathBuf::from(install_dir),
         &modidstr,
         &modversion,
