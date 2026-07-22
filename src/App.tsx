@@ -1152,7 +1152,7 @@ function App() {
             </label>
             {draft.version !== editing.meta.version && !availableVersions.find((v) => v.version === draft.version)?.cached && (
               <div className="warn-note" style={{ marginTop: -4 }}>
-                Changing to {draft.version} downloads it (your saves and mods stay). VS's installer will ask to uninstall your existing game — click <b>No</b>.
+                Changing to {draft.version} downloads it (your saves and mods stay). VS's installer will ask to uninstall your existing base game install from the Anego Studios installer, click <b>No</b> so this process does not affect your base game install.
               </div>
             )}
             <label className="field"><span className="lab">Start parameters</span>
@@ -1231,8 +1231,8 @@ function App() {
                   {createVersion} will be downloaded once ({availableVersions.find((v) => v.version === createVersion)?.filesize}) and shared with any other installation on this version.
                 </p>
                 <div className="warn-note">
-                  <b>Heads up:</b> Vintage Story's installer will ask <i>"An old version was detected. Uninstall it first?"</i> —
-                  click <b>No</b>. Your existing game stays untouched; the new version installs alongside it.
+                  <b>Heads up:</b> Vintage Story's installer will ask <i>"An old version was detected. Uninstall it first?"</i>,
+                  click <b>No</b>. Your existing Anego Studios game installation stays untouched; the new version installs alongside it.
                 </div>
               </>
             )}
@@ -1243,7 +1243,7 @@ function App() {
             {versionProgress && (
               <div className="checking" style={{ padding: "6px 0 10px" }}>
                 <div className="prog-n tab">
-                  {versionProgress.phase === "install" ? `Installing game ${versionProgress.version} (this can take a minute) — click No if Windows asks to uninstall your existing game` : `Downloading game ${versionProgress.version}…`}
+                  {versionProgress.phase === "install" ? `Installing game ${versionProgress.version} (this can take a minute) — click No if Windows asks to uninstall your existing Anego Studios base game` : `Downloading game ${versionProgress.version}…`}
                 </div>
                 <div className="prog"><i className={versionProgress.pct < 0 ? "indet" : ""} style={versionProgress.pct >= 0 ? { width: `${versionProgress.pct}%` } : { width: "40%" }} /></div>
               </div>
