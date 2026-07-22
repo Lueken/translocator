@@ -1,0 +1,196 @@
+<title>Translocator — Field Terminal</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  /* Translocator — "Field Terminal". A warm in-world instrument: amber
+     phosphor, monospace readouts, corner-ticked frames. Committed dark. */
+  :root{
+    --bg:#141210; --panel:#1A1610; --panel-2:#211B12; --line:#3A2F1E; --line-soft:#2A2216;
+    --amber:#E8B24A; --amber-dim:#8C6A2C; --amber-deep:#5c471f;
+    --text:#E6DAC0; --muted:#A6926C; --faint:#77673F;
+    --verd:#83BE9E; --rust:#CD5F42; --copper:#C77B3B;
+    --mono:ui-monospace,"Cascadia Code","JetBrains Mono","Consolas",monospace;
+    --sans:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;font-family:var(--mono);font-size:13.5px;color:var(--text);
+    background:radial-gradient(900px 560px at 84% -14%,#241B10 0,transparent 55%),var(--bg);
+    -webkit-font-smoothing:antialiased}
+  .tab{font-variant-numeric:tabular-nums}
+  .lbl{font-size:10.5px;letter-spacing:.22em;text-transform:uppercase;color:var(--faint)}
+  button{font-family:var(--mono);font-size:12.5px;cursor:pointer;color:var(--text)}
+  .btn{background:var(--panel-2);border:1px solid var(--line);padding:6px 12px;letter-spacing:.03em;text-transform:uppercase;font-size:11.5px}
+  .btn:hover{border-color:var(--amber-dim);color:var(--amber)}
+  .btn:focus-visible,.cta:focus-visible,.mini:focus-visible{outline:2px solid var(--amber);outline-offset:2px}
+  .cta{background:var(--amber);border:1px solid var(--amber);color:#211603;font-weight:700;padding:6px 13px;letter-spacing:.05em;text-transform:uppercase;font-size:11.5px}
+  .cta:hover{background:#F0BC58}
+  .link{background:none;border:none;color:var(--amber);font-size:11.5px;padding:0;letter-spacing:.03em;text-transform:uppercase}
+  .link:hover{text-decoration:underline}
+  .ticks{--t:11px;--c:var(--amber-dim);
+    background-image:
+      linear-gradient(var(--c),var(--c)),linear-gradient(var(--c),var(--c)),
+      linear-gradient(var(--c),var(--c)),linear-gradient(var(--c),var(--c)),
+      linear-gradient(var(--c),var(--c)),linear-gradient(var(--c),var(--c)),
+      linear-gradient(var(--c),var(--c)),linear-gradient(var(--c),var(--c));
+    background-repeat:no-repeat;
+    background-size:var(--t) 1px,1px var(--t),var(--t) 1px,1px var(--t),var(--t) 1px,1px var(--t),var(--t) 1px,1px var(--t);
+    background-position:0 0,0 0,100% 0,100% 0,0 100%,0 100%,100% 100%,100% 100%}
+
+  .app{max-width:1140px;margin:24px auto;height:min(772px,calc(100vh - 48px));display:grid;
+    grid-template-columns:232px 1fr;gap:14px;padding:14px;background:var(--bg)}
+
+  /* sidebar */
+  .side{border:1px solid var(--line);background:var(--panel);display:flex;flex-direction:column;padding:14px 12px}
+  .brand{display:flex;align-items:center;gap:10px;padding:2px 4px 10px;border-bottom:1px solid var(--line-soft)}
+  .gear{width:28px;height:28px;color:var(--amber);animation:spin 46s linear infinite;flex:none}
+  @media(prefers-reduced-motion:reduce){.gear{animation:none}}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  .bn{font-size:16px;letter-spacing:.04em;color:var(--text)}
+  .bv{font-size:9.5px;letter-spacing:.2em;text-transform:uppercase;color:var(--faint);margin-top:3px}
+  .acct{display:flex;align-items:center;gap:10px;margin:12px 2px;padding:8px;border:1px solid var(--line-soft);background:#00000030}
+  .av{width:28px;height:28px;border:1px solid var(--amber-dim);display:grid;place-items:center;color:var(--amber);font-weight:700}
+  .who{font-size:13px;color:var(--text)}.sg{font-size:10.5px;color:var(--verd);letter-spacing:.06em}
+  .idx{font-size:10px;letter-spacing:.2em;color:var(--faint);margin:8px 4px 4px}
+  nav{display:flex;flex-direction:column}
+  .nav{display:flex;align-items:center;gap:10px;padding:8px;color:var(--muted);text-decoration:none;border-left:2px solid transparent}
+  .nav .l{flex:1;letter-spacing:.03em}
+  .nav .c{font-size:12px;color:var(--faint)}
+  .nav:hover{color:var(--text);background:#ffffff06}
+  .nav.active{color:var(--amber);border-left-color:var(--amber);background:#2a2010}
+  .nav.active .c{color:var(--amber)}
+  .foot{margin-top:auto;display:flex;gap:8px;padding-top:12px;border-top:1px solid var(--line-soft)}
+  .foot button{flex:1;background:none;border:1px solid var(--line);padding:6px;color:var(--muted);text-transform:uppercase;font-size:10.5px;letter-spacing:.08em}
+
+  /* main */
+  .main{border:1px solid var(--line);background:var(--panel);display:flex;flex-direction:column;min-width:0;padding:14px}
+  .readout{display:flex;align-items:center;gap:0;border:1px solid var(--line);background:#00000030;padding:0;margin-bottom:12px;flex-wrap:wrap}
+  .ro{padding:9px 14px;border-right:1px solid var(--line-soft);font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+  .ro b{color:var(--text);font-size:13px;margin-left:8px;letter-spacing:0;text-transform:none}
+  .ro.hi b{color:var(--amber)}
+  .ro:last-child{border-right:none;margin-left:auto}
+  .tools{display:flex;align-items:center;gap:8px;margin-bottom:12px;flex-wrap:wrap}
+  .sel{display:inline-flex;align-items:center;gap:8px;border:1px solid var(--line);background:var(--panel-2);padding:6px 10px;font-size:12.5px}
+  .sel .c{color:var(--verd)}.sel svg{width:11px;height:11px;color:var(--muted)}
+  .grow{flex:1}
+  .bk{display:flex;align-items:center;gap:9px;font-size:11.5px;color:var(--muted);border:1px solid var(--line);border-left:2px solid var(--verd);padding:7px 12px;margin-bottom:12px;background:#00000026}
+  .bk b{color:var(--text)}.bk .on{margin-left:auto;color:var(--verd);text-transform:uppercase;letter-spacing:.06em}
+
+  .grid{flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden;padding:2px}
+  .head,.row{display:grid;grid-template-columns:34px 1fr 150px 128px 128px;align-items:center;gap:12px}
+  .head{padding:8px 12px;border-bottom:1px solid var(--line);font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--faint)}
+  .head .r{text-align:right}
+  .scroll{overflow-y:auto}
+  .row{padding:11px 12px;border-bottom:1px solid var(--line-soft)}
+  .row:hover{background:#ffffff06}
+  .no{color:var(--faint);display:flex;align-items:center;gap:8px}
+  .chev{cursor:pointer;color:var(--faint)}.chev svg{width:10px;height:10px;display:block}.chev:hover{color:var(--amber)}
+  .nm{color:var(--text);font-size:14px}
+  .id{color:var(--faint);font-size:11px}
+  .df{color:var(--muted);display:flex;align-items:center;gap:6px}
+  .df .to{color:var(--text)}
+  .gw{width:12px;height:12px;color:var(--amber)}
+  .st{letter-spacing:.04em;font-size:11.5px}
+  .st.ok{color:var(--verd)}.st.warn{color:var(--amber)}.st.bad{color:var(--rust)}
+  .act{display:flex;justify-content:flex-end;gap:10px;align-items:center}
+  .mini{border:1px solid var(--line);background:var(--panel-2);padding:5px 10px;font-size:11px;text-transform:uppercase;letter-spacing:.05em}
+  .mini:hover{border-color:var(--amber-dim);color:var(--amber)}.mini[disabled]{opacity:.4;cursor:not-allowed}
+
+  .exp{grid-column:1 / -1;padding:4px 0 6px 46px;border-bottom:1px solid var(--line-soft)}
+  .rel{display:grid;grid-template-columns:120px 1fr auto;gap:4px 14px;padding:9px 0;border-top:1px dashed var(--line-soft)}
+  .rel:first-child{border-top:none}
+  .rel .v{color:var(--amber);font-weight:700}
+  .rel .lg{color:#cbbd9c;font-size:12px;line-height:1.55;max-width:64ch}
+  .rel .lg b{color:var(--text)}
+  .rel .dt{grid-column:1;color:var(--faint);font-size:11px}
+
+  .note{max-width:1140px;margin:0 auto 40px;padding:6px 10px 0;color:var(--muted);font-size:12.5px;line-height:1.65}.note b{color:var(--text)}
+  @media(max-width:860px){.app{grid-template-columns:1fr;height:auto;gap:12px}.side{flex-direction:row;flex-wrap:wrap}nav{flex-direction:row;flex:1;flex-wrap:wrap}.foot{display:none}.head{display:none}.row{grid-template-columns:1fr;gap:6px}.act{justify-content:flex-start}}
+</style>
+
+<div class="app">
+  <aside class="side ticks">
+    <div class="brand">
+      <svg class="gear" viewBox="0 0 100 100" aria-hidden="true"><g fill="currentColor"><rect x="44" y="1" width="12" height="22" rx="3"/><rect x="44" y="1" width="12" height="22" rx="3" transform="rotate(45 50 50)"/><rect x="44" y="1" width="12" height="22" rx="3" transform="rotate(90 50 50)"/><rect x="44" y="1" width="12" height="22" rx="3" transform="rotate(135 50 50)"/><rect x="44" y="1" width="12" height="22" rx="3" transform="rotate(180 50 50)"/><rect x="44" y="1" width="12" height="22" rx="3" transform="rotate(225 50 50)"/><rect x="44" y="1" width="12" height="22" rx="3" transform="rotate(270 50 50)"/><rect x="44" y="1" width="12" height="22" rx="3" transform="rotate(315 50 50)"/><circle cx="50" cy="50" r="30"/></g><circle cx="50" cy="50" r="13" fill="#1A1610"/></svg>
+      <div><div class="bn">TRANSLOCATOR</div><div class="bv">Field Terminal</div></div>
+    </div>
+    <div class="acct"><div class="av">V</div><div><div class="who">Venah</div><div class="sg">◇ SIGNED IN</div></div></div>
+    <div class="idx">// INDEX</div>
+    <nav>
+      <a class="nav" href="#"><span class="l">Installations</span><span class="c">4</span></a>
+      <a class="nav active" href="#"><span class="l">Updates</span><span class="c">16</span></a>
+      <a class="nav" href="#"><span class="l">Mods</span><span class="c">191</span></a>
+      <a class="nav" href="#"><span class="l">Servers</span><span class="c">1</span></a>
+      <a class="nav" href="#"><span class="l">Versions</span><span class="c">1</span></a>
+      <a class="nav" href="#"><span class="l">Settings</span><span class="c"></span></a>
+    </nav>
+    <div class="foot"><button>Folder</button><button>Help</button></div>
+  </aside>
+
+  <div class="main">
+    <div class="readout">
+      <span class="ro">Install <b>The Quire</b></span>
+      <span class="ro">Game <b class="tab">1.22.3</b></span>
+      <span class="ro">Mods <b class="tab">191</b></span>
+      <span class="ro hi">Updates <b class="tab">16</b></span>
+    </div>
+
+    <div class="tools">
+      <span class="sel" role="button" tabindex="0"><span class="c">◇</span> The Quire <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg></span>
+      <span class="grow"></span>
+      <button class="btn">Check for updates</button>
+      <button class="cta">Update all compatible</button>
+    </div>
+
+    <div class="bk"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="var(--verd)" stroke-width="1.8"><path d="M12 3v12m0 0l-4-4m4 4l4-4M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>Mods folder snapshotted before every update. <span class="on">Auto-backup ON</span></div>
+
+    <div class="grid ticks">
+      <div class="head">
+        <span>#</span><span>Mod</span><span>Installed → New</span><span>Status</span><span class="r">Action</span>
+      </div>
+      <div class="scroll">
+        <div class="row">
+          <span class="no"><span class="chev"><svg viewBox="0 0 12 12" stroke="currentColor" stroke-width="1.6" fill="none"><path d="M4 2l4 4-4 4"/></svg></span>01</span>
+          <span><div class="nm">Adventurer's Walking Stick</div><div class="id">adventurerswalkingstick</div></span>
+          <span class="df tab">3.0.9 <svg class="gw" viewBox="0 0 24 24"><path fill="currentColor" d="M13.3 2h-2.6l-.4 2.2a8 8 0 0 0-1.7.7L6.7 3.6 4.9 5.4l1.3 1.9a8 8 0 0 0-.7 1.7L3.3 9.4v2.6l2.2.4c.2.6.4 1.1.7 1.7l-1.3 1.9 1.8 1.8 1.9-1.3c.5.3 1.1.5 1.7.7l.4 2.2h2.6l.4-2.2c.6-.2 1.2-.4 1.7-.7l1.9 1.3 1.8-1.8-1.3-1.9c.3-.5.5-1.1.7-1.7l2.2-.4V9.4l-2.2-.4a8 8 0 0 0-.7-1.7l1.3-1.9-1.8-1.8-1.9 1.3a8 8 0 0 0-1.7-.7L13.3 2zM12 15a3 3 0 1 1 0-6 3 3 0 0 1 0 6z"/></svg> <span class="to">3.0.10</span></span>
+          <span class="st ok">[ COMPATIBLE ]</span>
+          <span class="act"><button class="link">ModDB</button><button class="mini">Update</button></span>
+        </div>
+        <div class="row">
+          <span class="no"><span class="chev"><svg viewBox="0 0 12 12" stroke="currentColor" stroke-width="1.6" fill="none"><path d="M4 2l4 4-4 4"/></svg></span>02</span>
+          <span><div class="nm">Carry On</div><div class="id">carryon</div></span>
+          <span class="df tab">2.0.0-pre.3 <svg class="gw" viewBox="0 0 24 24"><path fill="currentColor" d="M13.3 2h-2.6l-.4 2.2a8 8 0 0 0-1.7.7L6.7 3.6 4.9 5.4l1.3 1.9a8 8 0 0 0-.7 1.7L3.3 9.4v2.6l2.2.4c.2.6.4 1.1.7 1.7l-1.3 1.9 1.8 1.8 1.9-1.3c.5.3 1.1.5 1.7.7l.4 2.2h2.6l.4-2.2c.6-.2 1.2-.4 1.7-.7l1.9 1.3 1.8-1.8-1.3-1.9c.3-.5.5-1.1.7-1.7l2.2-.4V9.4l-2.2-.4a8 8 0 0 0-.7-1.7l1.3-1.9-1.8-1.8-1.9 1.3a8 8 0 0 0-1.7-.7L13.3 2zM12 15a3 3 0 1 1 0-6 3 3 0 0 1 0 6z"/></svg> <span class="to">2.0.0-pre.7</span></span>
+          <span class="st warn">[ SHOULD WORK ]</span>
+          <span class="act"><button class="link">ModDB</button><button class="mini">Update</button></span>
+        </div>
+
+        <div class="row" style="background:#ffffff06">
+          <span class="no"><span class="chev"><svg viewBox="0 0 12 12" stroke="currentColor" stroke-width="1.6" fill="none" style="transform:rotate(90deg)"><path d="M4 2l4 4-4 4"/></svg></span>03</span>
+          <span><div class="nm">Elk Variants</div><div class="id">elkvariants · SiiMeR, RedOptics</div></span>
+          <span class="df tab">3.6.2 <svg class="gw" viewBox="0 0 24 24"><path fill="currentColor" d="M13.3 2h-2.6l-.4 2.2a8 8 0 0 0-1.7.7L6.7 3.6 4.9 5.4l1.3 1.9a8 8 0 0 0-.7 1.7L3.3 9.4v2.6l2.2.4c.2.6.4 1.1.7 1.7l-1.3 1.9 1.8 1.8 1.9-1.3c.5.3 1.1.5 1.7.7l.4 2.2h2.6l.4-2.2c.6-.2 1.2-.4 1.7-.7l1.9 1.3 1.8-1.8-1.3-1.9c.3-.5.5-1.1.7-1.7l2.2-.4V9.4l-2.2-.4a8 8 0 0 0-.7-1.7l1.3-1.9-1.8-1.8-1.9 1.3a8 8 0 0 0-1.7-.7L13.3 2zM12 15a3 3 0 1 1 0-6 3 3 0 0 1 0 6z"/></svg> <span class="to">3.7.2</span></span>
+          <span class="st ok">[ COMPATIBLE ]</span>
+          <span class="act"><button class="link">ModDB</button><button class="cta">Update</button></span>
+        </div>
+        <div class="exp">
+          <div class="rel"><span class="v tab">3.7.2</span><p class="lg"><b>Fixes.</b> Rider offset on elk; trader dialogue patch not applying; wrong movement speeds on tamed elk.</p><button class="mini">Install</button><span class="dt">19 JUL</span></div>
+          <div class="rel"><span class="v tab">3.7.1</span><p class="lg"><b>Fixes.</b> Error thrown when an elk had gaits assigned.</p><button class="mini">Install</button><span class="dt">19 JUL</span></div>
+          <div class="rel"><span class="v tab">3.7.0</span><p class="lg"><b>Fixes.</b> Some elk sounds were silent; tamed elk nibbling planted crops.</p><button class="mini">Install</button><span class="dt">18 JUL</span></div>
+        </div>
+
+        <div class="row">
+          <span class="no"><span class="chev"><svg viewBox="0 0 12 12" stroke="currentColor" stroke-width="1.6" fill="none"><path d="M4 2l4 4-4 4"/></svg></span>04</span>
+          <span><div class="nm">Specialized Classes</div><div class="id">specializedclasses</div></span>
+          <span class="df tab">3.0.0-rc.1 <svg class="gw" viewBox="0 0 24 24"><path fill="currentColor" d="M13.3 2h-2.6l-.4 2.2a8 8 0 0 0-1.7.7L6.7 3.6 4.9 5.4l1.3 1.9a8 8 0 0 0-.7 1.7L3.3 9.4v2.6l2.2.4c.2.6.4 1.1.7 1.7l-1.3 1.9 1.8 1.8 1.9-1.3c.5.3 1.1.5 1.7.7l.4 2.2h2.6l.4-2.2c.6-.2 1.2-.4 1.7-.7l1.9 1.3 1.8-1.8-1.3-1.9c.3-.5.5-1.1.7-1.7l2.2-.4V9.4l-2.2-.4a8 8 0 0 0-.7-1.7l1.3-1.9-1.8-1.8-1.9 1.3a8 8 0 0 0-1.7-.7L13.3 2zM12 15a3 3 0 1 1 0-6 3 3 0 0 1 0 6z"/></svg> <span class="to">3.0.0</span></span>
+          <span class="st ok">[ COMPATIBLE ]</span>
+          <span class="act"><button class="link">ModDB</button><button class="mini">Update</button></span>
+        </div>
+        <div class="row">
+          <span class="no"><span class="chev"><svg viewBox="0 0 12 12" stroke="currentColor" stroke-width="1.6" fill="none"><path d="M4 2l4 4-4 4"/></svg></span>05</span>
+          <span><div class="nm">Prospecting Overhaul</div><div class="id">prospectingoverhaul</div></span>
+          <span class="df tab">1.5.2 <svg class="gw" viewBox="0 0 24 24"><path fill="currentColor" d="M13.3 2h-2.6l-.4 2.2a8 8 0 0 0-1.7.7L6.7 3.6 4.9 5.4l1.3 1.9a8 8 0 0 0-.7 1.7L3.3 9.4v2.6l2.2.4c.2.6.4 1.1.7 1.7l-1.3 1.9 1.8 1.8 1.9-1.3c.5.3 1.1.5 1.7.7l.4 2.2h2.6l.4-2.2c.6-.2 1.2-.4 1.7-.7l1.9 1.3 1.8-1.8-1.3-1.9c.3-.5.5-1.1.7-1.7l2.2-.4V9.4l-2.2-.4a8 8 0 0 0-.7-1.7l1.3-1.9-1.8-1.8-1.9 1.3a8 8 0 0 0-1.7-.7L13.3 2zM12 15a3 3 0 1 1 0-6 3 3 0 0 1 0 6z"/></svg> <span class="to">2.0.0</span></span>
+          <span class="st bad">[ NEEDS 1.23 ]</span>
+          <span class="act"><button class="link">ModDB</button><button class="mini" disabled>Update</button></span>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+<p class="note"><b>Field Terminal — direction, not final art.</b> The launcher as an in-world instrument a Seraph would carry: amber phosphor on warm black, monospace readouts, corner-ticked frames, a top status strip. High-information and dense — the opposite of soft rounded cards. Same IA — labeled index, diff-only register, per-version changelogs.</p>

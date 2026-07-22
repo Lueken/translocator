@@ -1,0 +1,407 @@
+<title>Translocator Design Pass 2</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  /* Design Pass 2: Temporal Almanac refined. Single committed visual world
+     (this documents the desktop app's actual look). */
+  :root{
+    --field:#0E1512; --field2:#0B120F;
+    --side:#101915; --side2:#0C1310; --sline:#ffffff10;
+    --leaf:#E9DDC4; --leaf2:#e2d4b9; --rule:#cbb98f; --rule2:#d8cba8;
+    --ink:#211C12; --ink2:#5f5741; --ink3:#8f8467;
+    --copper:#B26A22; --copper2:#8a4f13; --copper-fg:#f4e9d2;
+    --verd:#3C7A5C; --ochre:#8a6414; --oxblood:#8c3a2c;
+    --parch:#E9DDC4; --parch2:#b6a985; --pfaint:#6f8578;
+    --disp:"Iowan Old Style","Palatino Linotype","Book Antiqua",Palatino,Georgia,serif;
+    --ui:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+    --mono:ui-monospace,"Cascadia Code","JetBrains Mono",Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--field);color:var(--parch);font-family:var(--ui);font-size:14px;line-height:1.5;-webkit-font-smoothing:antialiased}
+  .tab{font-variant-numeric:tabular-nums}
+  .wrap{max-width:1180px;margin:0 auto;padding:28px 16px 60px}
+  h1{font-family:var(--disp);font-size:26px;margin:0 0 4px}
+  .lede{color:var(--parch2);max-width:70ch;margin:0 0 8px}
+  .co{display:inline-grid;place-items:center;width:17px;height:17px;border-radius:50%;background:var(--copper);
+    color:#fff;font-size:10.5px;font-weight:700;font-family:var(--ui);vertical-align:2px;margin:0 2px;flex:none}
+  .keyline{color:var(--pfaint);font-size:12.5px;margin-bottom:22px}
+
+  /* ------- app frame ------- */
+  .frame{border:1px solid #04070680;border-radius:10px;overflow:hidden;box-shadow:0 34px 90px -34px #000;background:var(--field2)}
+  .tbar{height:36px;display:flex;align-items:center;gap:9px;padding:0 12px;background:#0A100D;border-bottom:1px solid #000000aa;color:var(--parch2)}
+  .tbar .gear-s{width:16px;height:16px;color:var(--copper)}
+  .tbar .t{font-family:var(--disp);font-size:13px;letter-spacing:.02em}
+  .tbar .drag{flex:1;height:100%}
+  .winbtn{width:34px;height:26px;display:grid;place-items:center;color:#5f746a;border-radius:4px}
+  .winbtn:hover{background:#ffffff10;color:var(--parch)}
+  .winbtn.close:hover{background:#8c3a2c;color:#fff}
+  .winbtn svg{width:11px;height:11px}
+
+  .body{display:grid;grid-template-columns:236px 1fr;grid-template-rows:700px;height:700px}
+  .body>*{min-height:0}
+
+  /* on-brand scrollbars: copper thumb on the material it rides on */
+  ::-webkit-scrollbar{width:11px;height:11px}
+  ::-webkit-scrollbar-track{background:transparent}
+  ::-webkit-scrollbar-thumb{background:#B26A2280;border-radius:6px;border:3px solid transparent;background-clip:content-box}
+  ::-webkit-scrollbar-thumb:hover{background:#B26A22;border:3px solid transparent;background-clip:content-box}
+  .reg::-webkit-scrollbar-thumb{background:#8a4f1366;border:3px solid transparent;background-clip:content-box;border-radius:6px}
+  .reg::-webkit-scrollbar-thumb:hover{background:#8a4f13;border:3px solid transparent;background-clip:content-box}
+  *{scrollbar-width:thin;scrollbar-color:#B26A2299 transparent}
+  .reg{scrollbar-color:#8a4f1399 transparent}
+
+  /* sidebar */
+  .side{background:linear-gradient(180deg,var(--side),var(--side2));border-right:1px solid #05080780;display:flex;flex-direction:column;padding:16px 14px 12px}
+  .brand{display:flex;align-items:center;gap:10px;padding:0 4px 6px}
+  .gear{width:30px;height:30px;color:var(--copper)}
+  .bn{font-family:var(--disp);font-size:19px;line-height:1}
+  .bs{font-size:9.5px;letter-spacing:.18em;text-transform:uppercase;color:var(--parch2);margin-top:4px}
+  .hr{height:1px;background:var(--sline);margin:12px 2px}
+  .acct{display:flex;align-items:center;gap:10px;padding:0 4px}
+  .wax{width:30px;height:30px;border-radius:50%;background:radial-gradient(circle at 34% 30%,#c98a4e,#9a5a22);
+    display:grid;place-items:center;font-family:var(--disp);font-weight:700;color:#20140b;box-shadow:inset 0 0 0 1px #00000030}
+  .who{font-family:var(--disp);font-size:14.5px}
+  .sg{font-size:10.5px;color:#77b699;display:flex;gap:5px;align-items:center}
+  .dv{width:5px;height:5px;border-radius:50%;background:#77b699}
+  .idx{font-size:9.5px;letter-spacing:.18em;text-transform:uppercase;color:var(--pfaint);padding:0 8px;margin:10px 0 2px}
+  .nav{display:flex;align-items:baseline;gap:10px;padding:8px;color:var(--parch2);text-decoration:none;border-left:2px solid transparent}
+  .nav .l{flex:1;font-family:var(--disp);font-size:15px}
+  .nav .c{font-family:var(--mono);font-size:11.5px;color:var(--pfaint)}
+  .nav.on{color:var(--copper);border-left-color:var(--copper);background:#ffffff07}
+  .nav.on .c{color:var(--copper)}
+
+  /* play dock */
+  .dock{margin-top:auto;border:1px solid #ffffff14;border-radius:7px;background:#00000030;padding:10px 11px}
+  .dock .dn{font-family:var(--disp);font-size:14.5px;color:var(--parch)}
+  .dock .dm{font-size:11px;color:var(--pfaint);font-family:var(--mono);margin:1px 0 8px}
+  .play{width:100%;border:1px solid #7a430e;background:linear-gradient(180deg,#bd7327,#a55d1c);color:var(--copper-fg);
+    font-weight:700;font-size:14px;border-radius:5px;padding:8px 0;font-family:var(--ui);cursor:pointer}
+
+  /* main leaf */
+  .main{background:linear-gradient(180deg,#efe4cd,#e6d8bd);color:var(--ink);display:flex;flex-direction:column;min-width:0;position:relative}
+  .lhd{padding:16px 24px 12px;border-bottom:1.5px solid var(--copper2)}
+  .eyebrow{font-size:10.5px;letter-spacing:.22em;text-transform:uppercase;color:var(--copper2);font-weight:600}
+  .lhd h2{font-family:var(--disp);font-size:24px;margin:3px 0 0;font-weight:600}
+  .controls{display:flex;align-items:flex-start;gap:10px;margin-top:12px;flex-wrap:wrap}
+  .sel{display:inline-flex;align-items:center;gap:8px;background:#00000008;border:1px solid #00000026;border-radius:5px;
+    padding:6px 10px;font-family:var(--disp);font-size:14px}
+  .sel .c{width:6px;height:6px;border-radius:50%;background:var(--verd)}
+  .chip{font-size:12px;color:var(--ink2);border:1px solid #00000024;border-radius:20px;padding:5px 11px;background:#00000006}
+  .chip b{font-family:var(--mono);color:var(--ink)}
+  .grow{flex:1}
+  .btn{color:var(--ink);background:#00000008;border:1px solid #0000002e;border-radius:5px;padding:7px 13px;font-size:13px;white-space:nowrap;cursor:pointer}
+  .ctacol{display:flex;flex-direction:column;align-items:flex-end;gap:3px}
+  .cta{border:1px solid #7a430e;background:linear-gradient(180deg,#bd7327,#a55d1c);color:var(--copper-fg);border-radius:5px;
+    padding:7px 14px;font-weight:600;font-size:13px;white-space:nowrap;cursor:pointer}
+  .capt{font-size:10.5px;color:var(--ink2)}
+
+  /* toolbar */
+  .toolbar{display:flex;align-items:center;gap:12px;padding:10px 24px;border-bottom:1px solid var(--rule);flex-wrap:wrap}
+  .filter{display:inline-flex;align-items:center;gap:7px;border:1px solid #00000024;border-radius:5px;padding:5px 10px;
+    background:#00000006;color:var(--ink3);font-size:12.5px;min-width:190px}
+  .counts{font-size:12.5px;color:var(--ink2)}
+  .counts b{color:var(--ink)}
+  .cdot{display:inline-block;width:7px;height:7px;border-radius:50%;margin:0 4px 0 10px;vertical-align:1px}
+  .report{margin-left:auto;color:var(--copper2);font-size:12.5px;font-weight:600;background:none;border:none;cursor:pointer}
+
+  /* register */
+  .reg{overflow-y:auto;flex:1}
+  .ghead{display:flex;align-items:center;gap:10px;padding:11px 24px 7px;color:var(--ink2);font-size:11px;
+    letter-spacing:.14em;text-transform:uppercase;font-weight:600}
+  .ghead::after{content:"";flex:1;height:1px;background:var(--rule)}
+  .ghead.hold{color:var(--oxblood)}
+  .row{display:grid;grid-template-columns:44px 1fr auto;align-items:center;column-gap:14px;padding:10px 24px;border-bottom:1px solid var(--rule2)}
+  .row:hover{background:#00000008}
+  .lineno{font-family:var(--disp);font-size:12.5px;color:var(--ink3);display:flex;align-items:center;gap:8px;justify-content:flex-end}
+  .chev svg{width:10px;height:10px;display:block;color:var(--ink3)}
+  .mn{font-family:var(--disp);font-size:16px;line-height:1.2}
+  .mi{font-family:var(--mono);font-size:11px;color:var(--ink3)}
+  .right{display:flex;align-items:center;gap:13px}
+  .diff{font-family:var(--mono);font-size:12.5px;color:var(--copper2);display:flex;align-items:center;gap:7px}
+  .diff .f{opacity:.6}.diff b{color:var(--ink)}
+  .gw{width:12px;height:12px;color:var(--copper)}
+  .pill{font-size:11px;font-weight:600;padding:3px 9px;border-radius:3px;display:inline-flex;gap:6px;align-items:center;border:1px solid;white-space:nowrap}
+  .pill i{width:6px;height:6px;border-radius:50%;font-style:normal}
+  .p-ok{color:var(--verd);background:#3c7a5c14;border-color:#3c7a5c50}.p-ok i{background:var(--verd)}
+  .p-warn{color:var(--ochre);background:#8a641414;border-color:#8a641450}.p-warn i{background:var(--ochre)}
+  .p-bad{color:var(--oxblood);background:#8c3a2c14;border-color:#8c3a2c50}.p-bad i{background:var(--oxblood)}
+  .lnk{color:var(--copper2);font-size:12px;font-weight:600;background:none;border:none;cursor:pointer;white-space:nowrap}
+  .mini{font-size:12px;color:var(--ink);background:#0000000a;border:1px solid #0000002e;border-radius:4px;padding:5px 11px;cursor:pointer;white-space:nowrap}
+  .mini[disabled]{opacity:.4;cursor:not-allowed}
+  .more{width:26px;height:26px;display:grid;place-items:center;border-radius:4px;color:var(--ink3);border:1px solid transparent;cursor:pointer}
+  .more:hover{border-color:#00000026;background:#00000008;color:var(--ink)}
+
+  /* folio */
+  .folio{margin:0 24px 10px 58px;border-left:2px solid var(--copper2);padding:2px 0 2px 16px}
+  .span-note{font-size:11.5px;color:var(--ink2);background:#00000008;border:1px dashed #00000022;border-radius:4px;
+    padding:5px 10px;margin:8px 0 2px;display:inline-flex;gap:7px;align-items:center}
+  .ver{display:grid;grid-template-columns:1fr auto;gap:2px 12px;padding:10px 0;border-top:1px solid var(--rule2)}
+  .ver:first-of-type{border-top:none}
+  .ver .v{font-family:var(--mono);font-weight:700;font-size:13px;display:flex;gap:8px;align-items:center}
+  .ver .v i{width:7px;height:7px;border-radius:50%;background:var(--verd);font-style:normal}
+  .ver .d{font-size:11px;color:var(--ink3);text-align:right}
+  .ver p{grid-column:1;font-size:12.5px;color:#4a4331;line-height:1.55;margin:2px 0 0;max-width:62ch}
+  .ver .a{grid-column:2;grid-row:2;align-self:start}
+
+  /* toast */
+  .toast{position:absolute;right:18px;bottom:16px;background:#1d2a24;color:var(--parch);border:1px solid #3a5a4b;
+    border-radius:7px;padding:10px 14px;display:flex;gap:12px;align-items:center;font-size:13px;box-shadow:0 12px 30px -10px #000}
+  .toast .u{color:#77b699;font-weight:700;background:none;border:none;cursor:pointer;font-size:13px}
+
+  /* ------- state panels ------- */
+  .states{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:14px;margin-top:18px}
+  .panel{border:1px solid #04070680;border-radius:9px;overflow:hidden;background:linear-gradient(180deg,#efe4cd,#e6d8bd);color:var(--ink)}
+  .panel .cap{background:#0A100D;color:var(--parch2);font-size:11px;letter-spacing:.12em;text-transform:uppercase;padding:7px 12px;display:flex;gap:8px;align-items:center}
+  .panel .in{padding:16px}
+  .prog{height:3px;background:#00000015;border-radius:2px;overflow:hidden;margin:10px 0 6px}
+  .prog i{display:block;height:100%;width:67%;background:var(--copper)}
+  .prog-t{font-size:12px;color:var(--ink2);font-family:var(--mono)}
+  .skel{height:13px;border-radius:3px;background:linear-gradient(90deg,#00000010,#00000018,#00000010);margin:9px 0}
+  .empty{text-align:center;padding:18px 8px 10px}
+  .empty .eg{width:40px;height:40px;color:var(--copper);opacity:.75;margin:0 auto 8px}
+  .empty h3{font-family:var(--disp);margin:0 0 4px;font-size:17px}
+  .empty p{color:var(--ink2);font-size:12.5px;margin:0 0 12px}
+  .modal{background:#efe4cd;border:1px solid #00000030;border-radius:8px;padding:16px;box-shadow:0 18px 44px -14px #00000080;max-width:340px;margin:6px auto}
+  .modal h3{font-family:var(--disp);margin:0 0 6px;font-size:16.5px}
+  .modal p{font-size:12.5px;color:var(--ink2);margin:0 0 14px;line-height:1.55}
+  .modal .acts{display:flex;justify-content:flex-end;gap:8px}
+  .danger{border:1px solid #6d2d22;background:linear-gradient(180deg,#a04635,#8c3a2c);color:#f6e8e0;border-radius:5px;padding:7px 14px;font-weight:600;font-size:13px}
+
+  /* ------- notes ------- */
+  section{margin-top:34px}
+  h2.sec{font-family:var(--disp);font-size:20px;margin:0 0 12px;color:var(--parch)}
+  .notes{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:10px 22px}
+  .note{display:flex;gap:10px;align-items:flex-start;font-size:13px;color:var(--parch2);line-height:1.55}
+  .note b{color:var(--parch)}
+  .impl{border:1px solid #ffffff14;border-radius:9px;background:#ffffff06;padding:16px 20px}
+  .impl ul{margin:6px 0 0;padding-left:18px;color:var(--parch2);font-size:13px;line-height:1.75}
+  .impl b{color:var(--parch)}
+  .impl code{font-family:var(--mono);font-size:12px;color:#d9b98a;background:#00000040;border-radius:3px;padding:1px 5px}
+  @media (max-width:900px){.body{grid-template-columns:1fr;height:auto}.side{flex-direction:row;flex-wrap:wrap;align-items:center}.dock{margin:8px 0 0;width:100%}}
+</style>
+
+<div class="wrap">
+  <h1>Translocator, Design Pass 2</h1>
+  <p class="lede">Temporal Almanac, refined against the first real build. Everything the current app does is kept;
+    what's added is <b>states, feedback, and safety</b>: the things that make a tool feel finished. Copper dots
+    <span class="co">n</span> mark each change; notes and an implementation checklist follow.</p>
+  <p class="keyline">Ledger data is your real Quire pack. Single committed theme (Almanac); every pattern here carries to Workshop &amp; Terminal via the token system.</p>
+
+  <!-- ================= APP FRAME ================= -->
+  <div class="frame">
+    <div class="tbar">
+      <svg class="gear-s" viewBox="0 0 100 100"><g fill="currentColor"><rect x="44" y="1" width="12" height="22" rx="3"/><rect x="44" y="1" width="12" height="22" rx="3" transform="rotate(45 50 50)"/><rect x="44" y="1" width="12" height="22" rx="3" transform="rotate(90 50 50)"/><rect x="44" y="1" width="12" height="22" rx="3" transform="rotate(135 50 50)"/><rect x="44" y="1" width="12" height="22" rx="3" transform="rotate(180 50 50)"/><rect x="44" y="1" width="12" height="22" rx="3" transform="rotate(225 50 50)"/><rect x="44" y="1" width="12" height="22" rx="3" transform="rotate(270 50 50)"/><rect x="44" y="1" width="12" height="22" rx="3" transform="rotate(315 50 50)"/><circle cx="50" cy="50" r="30"/></g><circle cx="50" cy="50" r="13" fill="#0A100D"/></svg>
+      <span class="t">Translocator</span><span class="co">1</span>
+      <div class="drag"></div>
+      <span class="winbtn"><svg viewBox="0 0 12 12" stroke="currentColor" stroke-width="1.2"><line x1="2" y1="6" x2="10" y2="6"/></svg></span>
+      <span class="winbtn"><svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.2"><rect x="2.5" y="2.5" width="7" height="7"/></svg></span>
+      <span class="winbtn close"><svg viewBox="0 0 12 12" stroke="currentColor" stroke-width="1.2"><line x1="3" y1="3" x2="9" y2="9"/><line x1="9" y1="3" x2="3" y2="9"/></svg></span>
+    </div>
+
+    <div class="body">
+      <aside class="side">
+        <div class="brand">
+          <svg class="gear" viewBox="0 0 100 100"><g fill="currentColor"><rect x="44" y="1" width="12" height="22" rx="3"/><rect x="44" y="1" width="12" height="22" rx="3" transform="rotate(45 50 50)"/><rect x="44" y="1" width="12" height="22" rx="3" transform="rotate(90 50 50)"/><rect x="44" y="1" width="12" height="22" rx="3" transform="rotate(135 50 50)"/><rect x="44" y="1" width="12" height="22" rx="3" transform="rotate(180 50 50)"/><rect x="44" y="1" width="12" height="22" rx="3" transform="rotate(225 50 50)"/><rect x="44" y="1" width="12" height="22" rx="3" transform="rotate(270 50 50)"/><rect x="44" y="1" width="12" height="22" rx="3" transform="rotate(315 50 50)"/><circle cx="50" cy="50" r="30"/></g><circle cx="50" cy="50" r="13" fill="#101915"/></svg>
+          <div><div class="bn">Translocator</div><div class="bs">Temporal Almanac</div></div>
+        </div>
+        <div class="hr"></div>
+        <div class="acct"><div class="wax">V</div><div><div class="who">Venah</div><div class="sg"><span class="dv"></span>Signed in</div></div></div>
+        <div class="hr"></div>
+        <div class="idx">Index</div>
+        <a class="nav" href="#"><span class="l">Installations</span><span class="c">4</span></a>
+        <a class="nav on" href="#"><span class="l">Updates</span><span class="c">16</span></a>
+        <a class="nav" href="#"><span class="l">Mods</span><span class="c">192</span></a>
+        <a class="nav" href="#"><span class="l">Account</span><span class="c"></span></a>
+        <a class="nav" href="#"><span class="l">Settings</span><span class="c"></span></a>
+
+        <div class="dock">
+          <div style="display:flex;align-items:center;gap:6px"><div class="dn">The Quire</div><span class="co">2</span></div>
+          <div class="dm">1.22.3 · 192 mods</div>
+          <button class="play">▶ &nbsp;Play</button>
+        </div>
+      </aside>
+
+      <div class="main">
+        <div class="lhd">
+          <div class="eyebrow">Ledger of Changes</div>
+          <h2>The Quire</h2>
+          <div class="controls">
+            <span class="sel"><span class="c"></span>The Quire <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg></span>
+            <span class="chip">Game <b>1.22.3</b></span>
+            <span class="grow"></span>
+            <button class="btn">Check for updates</button>
+            <div class="ctacol">
+              <button class="cta">Update all compatible</button>
+              <span class="capt">Mods back up before update <span class="co" style="width:15px;height:15px;font-size:9.5px">8</span></span>
+            </div>
+          </div>
+        </div>
+
+        <div class="toolbar">
+          <span class="filter">⌕ Filter mods… </span>
+          <span class="counts"><b>16</b> updates
+            <span class="cdot" style="background:var(--verd)"></span>14 compatible
+            <span class="cdot" style="background:var(--ochre)"></span>1 should work
+            <span class="cdot" style="background:var(--oxblood)"></span>1 held back
+            <span class="co">3</span></span>
+          <button class="report">⎘ Copy update report <span class="co" style="width:15px;height:15px;font-size:9.5px">12</span></button>
+        </div>
+
+        <div class="reg">
+          <div class="ghead">Ready to update · 15 <span class="co">4</span></div>
+
+          <div class="row">
+            <div class="lineno"><span class="chev"><svg viewBox="0 0 12 12" stroke="currentColor" stroke-width="1.6" fill="none"><path d="M4 2l4 4-4 4"/></svg></span>01</div>
+            <div><div class="mn">Adventurer's Walking Stick</div><div class="mi">walkingstick</div></div>
+            <div class="right">
+              <span class="diff"><span class="f tab">3.0.9</span><svg class="gw" viewBox="0 0 24 24"><path fill="currentColor" d="M13.3 2h-2.6l-.4 2.2a8 8 0 0 0-1.7.7L6.7 3.6 4.9 5.4l1.3 1.9a8 8 0 0 0-.7 1.7L3.3 9.4v2.6l2.2.4c.2.6.4 1.1.7 1.7l-1.3 1.9 1.8 1.8 1.9-1.3c.5.3 1.1.5 1.7.7l.4 2.2h2.6l.4-2.2c.6-.2 1.2-.4 1.7-.7l1.9 1.3 1.8-1.8-1.3-1.9c.3-.5.5-1.1.7-1.7l2.2-.4V9.4l-2.2-.4a8 8 0 0 0-.7-1.7l1.3-1.9-1.8-1.8-1.9 1.3a8 8 0 0 0-1.7-.7L13.3 2zM12 15a3 3 0 1 1 0-6 3 3 0 0 1 0 6z"/></svg><b class="tab">3.0.10</b></span>
+              <span class="pill p-ok"><i></i>Compatible</span>
+              <button class="lnk">ModDB ↗</button><button class="mini">Update</button>
+              <span class="more">⋯ <span class="co" style="width:15px;height:15px;font-size:9.5px;position:relative;top:-8px;left:-3px">5</span></span>
+            </div>
+          </div>
+
+          <div class="row">
+            <div class="lineno"><span class="chev"><svg viewBox="0 0 12 12" stroke="currentColor" stroke-width="1.6" fill="none"><path d="M4 2l4 4-4 4"/></svg></span>02</div>
+            <div><div class="mn">Biodiversity: Flowers and Grass</div><div class="mi">bdflower</div></div>
+            <div class="right">
+              <span class="diff"><span class="f tab">0.1.0</span><svg class="gw" viewBox="0 0 24 24"><path fill="currentColor" d="M13.3 2h-2.6l-.4 2.2a8 8 0 0 0-1.7.7L6.7 3.6 4.9 5.4l1.3 1.9a8 8 0 0 0-.7 1.7L3.3 9.4v2.6l2.2.4c.2.6.4 1.1.7 1.7l-1.3 1.9 1.8 1.8 1.9-1.3c.5.3 1.1.5 1.7.7l.4 2.2h2.6l.4-2.2c.6-.2 1.2-.4 1.7-.7l1.9 1.3 1.8-1.8-1.3-1.9c.3-.5.5-1.1.7-1.7l2.2-.4V9.4l-2.2-.4a8 8 0 0 0-.7-1.7l1.3-1.9-1.8-1.8-1.9 1.3a8 8 0 0 0-1.7-.7L13.3 2zM12 15a3 3 0 1 1 0-6 3 3 0 0 1 0 6z"/></svg><b class="tab">0.1.1</b></span>
+              <span class="pill p-warn"><i></i>Should work</span>
+              <button class="lnk">ModDB ↗</button><button class="mini">Update</button>
+              <span class="more">⋯</span>
+            </div>
+          </div>
+
+          <!-- expanded -->
+          <div class="row" style="background:#0000000a">
+            <div class="lineno"><span class="chev"><svg viewBox="0 0 12 12" stroke="currentColor" stroke-width="1.6" fill="none" style="transform:rotate(90deg)"><path d="M4 2l4 4-4 4"/></svg></span>03</div>
+            <div><div class="mn">Elk Variants</div><div class="mi">elkvariants · SiiMeR, RedOptics</div></div>
+            <div class="right">
+              <span class="diff"><span class="f tab">3.6.2</span><svg class="gw" viewBox="0 0 24 24"><path fill="currentColor" d="M13.3 2h-2.6l-.4 2.2a8 8 0 0 0-1.7.7L6.7 3.6 4.9 5.4l1.3 1.9a8 8 0 0 0-.7 1.7L3.3 9.4v2.6l2.2.4c.2.6.4 1.1.7 1.7l-1.3 1.9 1.8 1.8 1.9-1.3c.5.3 1.1.5 1.7.7l.4 2.2h2.6l.4-2.2c.6-.2 1.2-.4 1.7-.7l1.9 1.3 1.8-1.8-1.3-1.9c.3-.5.5-1.1.7-1.7l2.2-.4V9.4l-2.2-.4a8 8 0 0 0-.7-1.7l1.3-1.9-1.8-1.8-1.9 1.3a8 8 0 0 0-1.7-.7L13.3 2zM12 15a3 3 0 1 1 0-6 3 3 0 0 1 0 6z"/></svg><b class="tab">3.7.2</b></span>
+              <span class="pill p-ok"><i></i>Compatible</span>
+              <button class="lnk">ModDB ↗</button><button class="cta" style="padding:5px 12px;font-size:12px">Update to 3.7.2</button>
+              <span class="more">⋯</span>
+            </div>
+          </div>
+          <div class="folio">
+            <div class="span-note"><span class="co" style="width:15px;height:15px;font-size:9.5px">6</span> Updating 3.6.2 → 3.7.2 applies everything below. Read all three before deciding.</div>
+            <div class="ver"><div class="v"><i></i>3.7.2</div><div class="d">19 Jul</div><p><b>Fixes.</b> Rider offset on elk; trader dialogue patch not applying; wrong movement speeds on tamed elk.</p><button class="mini a">Install this version</button></div>
+            <div class="ver"><div class="v"><i></i>3.7.1</div><div class="d">19 Jul</div><p><b>Fixes.</b> Error thrown when an elk had gaits assigned.</p><button class="mini a">Install this version</button></div>
+            <div class="ver"><div class="v"><i></i>3.7.0</div><div class="d">18 Jul</div><p><b>Fixes.</b> Some elk sounds were silent; tamed elk nibbling planted crops.</p><button class="mini a">Install this version</button></div>
+          </div>
+
+          <div class="row">
+            <div class="lineno"><span class="chev"><svg viewBox="0 0 12 12" stroke="currentColor" stroke-width="1.6" fill="none"><path d="M4 2l4 4-4 4"/></svg></span>04</div>
+            <div><div class="mn">Hydrate or Diedrate</div><div class="mi">hydrateordiedrate</div></div>
+            <div class="right">
+              <span class="diff"><span class="f tab">2.4.14</span><svg class="gw" viewBox="0 0 24 24"><path fill="currentColor" d="M13.3 2h-2.6l-.4 2.2a8 8 0 0 0-1.7.7L6.7 3.6 4.9 5.4l1.3 1.9a8 8 0 0 0-.7 1.7L3.3 9.4v2.6l2.2.4c.2.6.4 1.1.7 1.7l-1.3 1.9 1.8 1.8 1.9-1.3c.5.3 1.1.5 1.7.7l.4 2.2h2.6l.4-2.2c.6-.2 1.2-.4 1.7-.7l1.9 1.3 1.8-1.8-1.3-1.9c.3-.5.5-1.1.7-1.7l2.2-.4V9.4l-2.2-.4a8 8 0 0 0-.7-1.7l1.3-1.9-1.8-1.8-1.9 1.3a8 8 0 0 0-1.7-.7L13.3 2zM12 15a3 3 0 1 1 0-6 3 3 0 0 1 0 6z"/></svg><b class="tab">2.5.1</b></span>
+              <span class="pill p-ok"><i></i>Compatible</span>
+              <button class="lnk">ModDB ↗</button><button class="mini">Update</button>
+              <span class="more">⋯</span>
+            </div>
+          </div>
+
+          <div class="ghead hold">Held back, needs a newer game · 1</div>
+          <div class="row" style="opacity:.82">
+            <div class="lineno"><span class="chev"><svg viewBox="0 0 12 12" stroke="currentColor" stroke-width="1.6" fill="none"><path d="M4 2l4 4-4 4"/></svg></span>16</div>
+            <div><div class="mn">Prospecting Overhaul</div><div class="mi">prospectingoverhaul</div></div>
+            <div class="right">
+              <span class="diff"><span class="f tab">1.5.2</span><svg class="gw" viewBox="0 0 24 24"><path fill="currentColor" d="M13.3 2h-2.6l-.4 2.2a8 8 0 0 0-1.7.7L6.7 3.6 4.9 5.4l1.3 1.9a8 8 0 0 0-.7 1.7L3.3 9.4v2.6l2.2.4c.2.6.4 1.1.7 1.7l-1.3 1.9 1.8 1.8 1.9-1.3c.5.3 1.1.5 1.7.7l.4 2.2h2.6l.4-2.2c.6-.2 1.2-.4 1.7-.7l1.9 1.3 1.8-1.8-1.3-1.9c.3-.5.5-1.1.7-1.7l2.2-.4V9.4l-2.2-.4a8 8 0 0 0-.7-1.7l1.3-1.9-1.8-1.8-1.9 1.3a8 8 0 0 0-1.7-.7L13.3 2zM12 15a3 3 0 1 1 0-6 3 3 0 0 1 0 6z"/></svg><b class="tab">2.0.0</b></span>
+              <span class="pill p-bad"><i></i>Needs 1.23</span>
+              <button class="lnk">ModDB ↗</button><button class="mini" disabled>Update</button>
+              <span class="more">⋯</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="toast">✓ Elk Variants updated to 3.7.2 <button class="u">Undo</button> <span class="co">7</span></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ================= STATE PANELS ================= -->
+  <div class="states">
+    <div class="panel">
+      <div class="cap"><span class="co">9</span> Checking · determinate progress</div>
+      <div class="in">
+        <div style="font-family:var(--disp);font-size:15px">Consulting the ledger…</div>
+        <div class="prog"><i></i></div>
+        <div class="prog-t tab">128 / 191 mods checked</div>
+        <div class="skel" style="width:82%"></div>
+        <div class="skel" style="width:70%"></div>
+        <div class="skel" style="width:76%"></div>
+      </div>
+    </div>
+    <div class="panel">
+      <div class="cap"><span class="co">10</span> Empty · the ledger is current</div>
+      <div class="in empty">
+        <svg class="eg" viewBox="0 0 100 100"><g fill="currentColor"><rect x="44" y="1" width="12" height="22" rx="3"/><rect x="44" y="1" width="12" height="22" rx="3" transform="rotate(45 50 50)"/><rect x="44" y="1" width="12" height="22" rx="3" transform="rotate(90 50 50)"/><rect x="44" y="1" width="12" height="22" rx="3" transform="rotate(135 50 50)"/><rect x="44" y="1" width="12" height="22" rx="3" transform="rotate(180 50 50)"/><rect x="44" y="1" width="12" height="22" rx="3" transform="rotate(225 50 50)"/><rect x="44" y="1" width="12" height="22" rx="3" transform="rotate(270 50 50)"/><rect x="44" y="1" width="12" height="22" rx="3" transform="rotate(315 50 50)"/><circle cx="50" cy="50" r="30"/></g><circle cx="50" cy="50" r="13" fill="#efe4cd"/></svg>
+        <h3>Every entry is current</h3>
+        <p>All 192 mods match their newest compatible release.<br>Last checked today at 21:40.</p>
+        <button class="btn">Check again</button>
+      </div>
+    </div>
+    <div class="panel">
+      <div class="cap"><span class="co">11</span> Confirm · the only dangerous button</div>
+      <div class="in" style="background:#00000030">
+        <div class="modal">
+          <h3>Restore this snapshot?</h3>
+          <p>Your Mods folder will be replaced with the backup from <b>21 Jul, 22:31</b> (191 mods).
+            The current folder is backed up first, so this can be undone.</p>
+          <div class="acts"><button class="btn">Cancel</button><button class="danger">Restore snapshot</button></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ================= NOTES ================= -->
+  <section>
+    <h2 class="sec">Annotations</h2>
+    <div class="notes">
+      <div class="note"><span class="co">1</span><span><b>Custom titlebar.</b> Ink-dark bar replaces the OS chrome (the black Windows bar currently clashes with the leaf). Gear + wordmark left, drag region middle, min/max/close right; close hollows to oxblood on hover. The drawn-X animation you liked in SF slots here later.</span></div>
+      <div class="note"><span class="co">2</span><span><b>Play dock.</b> The selected installation + Play pinned at the sidebar's foot, so you can launch from any screen without navigating back. (The one VSL pattern worth keeping: their bottom-left dock.)</span></div>
+      <div class="note"><span class="co">3</span><span><b>Status strip.</b> Filter box + counts by compatibility, so 191-mod packs stay navigable. Counts double as the legend, so the separate legend row goes away (one less thing to mismatch).</span></div>
+      <div class="note"><span class="co">4</span><span><b>Grouped register.</b> "Ready to update" and "Held back, needs a newer game" as ruled section heads. Your yellow-bucket instinct from VSL, done as ledger sections; held-back rows sit dimmed at the bottom, never mixed in.</span></div>
+      <div class="note"><span class="co">5</span><span><b>Row overflow (⋯).</b> Ignore this version / Pin this mod / Open mod folder. Curators hold mods back on purpose: an ignored version stops appearing until the next release. Also where rare actions live so rows stay clean.</span></div>
+      <div class="note"><span class="co">6</span><span><b>Span note.</b> When the jump crosses several releases, the folio says so explicitly: updating applies every entry between installed and target. Makes the read-the-notes behavior the default mental model.</span></div>
+      <div class="note"><span class="co">7</span><span><b>Toasts with Undo.</b> Feedback appears where you acted, not in a log buried in Settings. Undo reinstalls the previous version. The Activity log stays in Settings as the forensic record.</span></div>
+      <div class="note"><span class="co">8</span><span><b>Backup caption</b> under Update-all, exactly where you moved it. The banner container is gone for good.</span></div>
+      <div class="note"><span class="co">9</span><span><b>Determinate progress.</b> The check emits per-mod progress from the backend; the bar + "128/191" replaces the current silent 5-second freeze. Skeleton rows hold the layout.</span></div>
+      <div class="note"><span class="co">10</span><span><b>Empty state with a voice.</b> "Every entry is current" + last-checked time: a confident resting state instead of a bare sentence.</span></div>
+      <div class="note"><span class="co">11</span><span><b>Confirm the destructive action.</b> Restore replaces the whole Mods folder, so it gets a modal that states what happens, when the snapshot is from, and that it's undoable (because we back up first).</span></div>
+      <div class="note"><span class="co">12</span><span><b>Copy update report.</b> One click exports pending updates + changelogs as markdown. That is your exact Quire curation flow (vet per domain, paste to Discord/brief) built into the tool. Nobody else has this.</span></div>
+    </div>
+  </section>
+
+  <!-- ================= BENCHMARK ================= -->
+  <section>
+    <h2 class="sec">Benchmark: CurseForge (the industry standard, not the template)</h2>
+    <div class="notes">
+      <div class="note"><span class="co" style="background:var(--verd)">✓</span><span><b>Learn: metadata-dense rows.</b> Their Browse rows carry downloads · updated date · file size · game version · loader as scannable chips. Our Mods view should show downloads · last release · compatible game versions per result. The data is already in the ModDB response.</span></div>
+      <div class="note"><span class="co" style="background:var(--verd)">✓</span><span><b>Learn: Import is a first-class action.</b> "Create / Import" sit at the top of My Modpacks. When our manifest modpacks land, Import a pack file must be one click on Installations, not buried.</span></div>
+      <div class="note"><span class="co" style="background:var(--verd)">✓</span><span><b>Learn: version badge on every card.</b> Each pack card wears its version. Our installations should wear game version + mod count the same way (the Play dock already does).</span></div>
+      <div class="note"><span class="co" style="background:var(--oxblood)">✗</span><span><b>Avoid: the ad rail.</b> A quarter of their window is ads; "Ads support authors. Subscribe" is the business model bleeding into the chrome. Translocator's answer is structural: no ads, no subscriptions; the ♥ tip button routes support straight to authors. That's a trust feature; say it in the app's About.</span></div>
+      <div class="note"><span class="co" style="background:var(--oxblood)">✗</span><span><b>Avoid: icon-only mystery rail.</b> Their left rail is nine unlabeled icons, the exact VSL sin you flagged. Our index stays worded, always.</span></div>
+      <div class="note"><span class="co" style="background:var(--oxblood)">✗</span><span><b>Avoid: sponsored rows in results.</b> Their Browse mixes paid "Sponsored" packs (with a fake Play button) into search results, and Discover leads with contests over content. Ranking in Translocator is never for sale; results order is always explainable (downloads, updated, relevance).</span></div>
+      <div class="note"><span class="co" style="background:var(--oxblood)">✗</span><span><b>Their gap, our edge:</b> even the industry standard shows no release notes in its update flow; "Update" is a blind button there too. The changelog ledger remains the feature nobody else has.</span></div>
+    </div>
+  </section>
+
+  <!-- ================= CHECKLIST ================= -->
+  <section>
+    <h2 class="sec">Implementation checklist</h2>
+    <div class="impl">
+      <ul>
+        <li><b>Window basics first:</b> set <code>minWidth/minHeight</code> (≈960×640) in <code>tauri.conf.json</code> to kill the broken narrow layout outright, and add <code>tauri-plugin-window-state</code> so size/position persist.</li>
+        <li><b>Custom titlebar:</b> <code>decorations: false</code> + a drag-region header component; min/max/close via the window API. Do this when ready; it's cosmetic, not blocking.</li>
+        <li><b>Progress events:</b> <code>check_updates</code> emits <code>(done, total)</code> via a Tauri channel as each mod resolves; frontend renders the bar. Backend loop already iterates per-mod, so it is one emit line.</li>
+        <li><b>Toast + Undo:</b> small toast stack in React; Undo = <code>install_release</code> of the previous version (we know it; it's the version we just replaced).</li>
+        <li><b>Confirm dialog</b> for Restore; take an automatic safety backup before restoring so the modal's "undoable" claim is true.</li>
+        <li><b>Grouping + filter + sort:</b> pure frontend over the existing <code>ModUpdate[]</code>: compatible/should-work first, held-back section last, text filter on name/modid.</li>
+        <li><b>Ignore/pin list:</b> persist <code>{"{modid: version}"}</code> per installation (same pattern as the account store); filter ignored versions out of <code>check_updates</code> results.</li>
+        <li><b>Update report:</b> serialize pending updates + changelogs to markdown, copy to clipboard (<code>tauri-plugin-clipboard-manager</code>).</li>
+        <li><b>Display names:</b> render folder names with hyphens/underscores as spaces ("The-Quire" → "The Quire"); keep the raw name everywhere paths matter.</li>
+        <li><b>Native select:</b> the OS-drawn option list resists theming; if it still clashes after the opaque fix, replace with a small custom dropdown (also gives the install picker its verdigris status dots).</li>
+      </ul>
+    </div>
+  </section>
+</div>
