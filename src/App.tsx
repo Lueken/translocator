@@ -438,7 +438,12 @@ function App() {
               </select>
               <span className="pchip">Game <b>{gameVersion}</b></span>
               <button className="btn" disabled={busy || !target} onClick={checkUpdates}>Check for updates</button>
-              {updates.length > 0 && <button className="cta" disabled={busy} onClick={updateAllLatest}>Update all compatible</button>}
+              {updates.length > 0 && (
+                <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 3 }}>
+                  <button className="cta" disabled={busy} onClick={updateAllLatest}>Update all compatible</button>
+                  <span style={{ fontSize: 11, color: "var(--fg-muted)" }}>Mods back up before update</span>
+                </div>
+              )}
             </div>
             <div className="view">
               {updates.length > 0 && (
@@ -451,10 +456,6 @@ function App() {
                   </span>
                 </div>
               )}
-              <div className="notice">
-                Your Mods folder is snapshotted before every update.<span className="on">Auto-backup on</span>
-              </div>
-
               {updates.length === 0 ? (
                 <p className="muted">Pick an installation and check for updates.</p>
               ) : (
