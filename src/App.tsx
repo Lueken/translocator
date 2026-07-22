@@ -215,6 +215,7 @@ function App() {
   const [createName, setCreateName] = useState("");
   const [createVersion, setCreateVersion] = useState("");
   const [cachedVersions, setCachedVersions] = useState<string[]>([]);
+  const [seedSettings, setSeedSettings] = useState(() => localStorage.getItem("tl-seed-settings") !== "0");
 
   const [view, setView] = useState<View>("updates");
   const [theme, setTheme] = useState<Theme>(() => (localStorage.getItem("tl-theme") as Theme) || "almanac");
@@ -370,13 +371,25 @@ function App() {
       setVersionProgress(null);
     }
   }
+  // Where a new install inherits game settings from: your most-recently played
+  // install, or the base game if you have none yet.
+  function seedSource(): { label: string; value: string } {
+    const played = installs
+      .filter((i) => i.meta.last_played > 0)
+      .sort((a, b) => b.meta.last_played - a.meta.last_played)[0];
+    return played
+      ? { label: played.meta.name, value: played.path }
+      : { label: "your base Vintage Story install", value: "__base__" };
+  }
   async function doCreate() {
     const name = createName.trim();
     if (!name || !createVersion) return;
     const ok = await ensureVersion(createVersion);
     if (!ok) return;
     try {
-      const path = await invoke<string>("create_installation", { installationsDir, name, version: createVersion });
+      const seed_from = seedSettings ? seedSource().value : null;
+      const path = await invoke<string>("create_installation", { installationsDir, name, version: createVersion, seedFrom: seed_from });
+      if (seed_from) say(`Copied game settings from ${seedSource().label}.`);
       say(`Created installation ${name} on ${createVersion}.`);
       toast(`Created ${name}`);
       setCreating(false);
@@ -1223,10 +1236,14 @@ function App() {
                 </div>
               </>
             )}
+            <label className="field row-check">
+              <input type="checkbox" checked={seedSettings} onChange={(e) => { setSeedSettings(e.target.checked); localStorage.setItem("tl-seed-settings", e.target.checked ? "1" : "0"); }} />
+              <span>Copy my game settings (keybinds, graphics) from <b>{seedSource().label}</b></span>
+            </label>
             {versionProgress && (
               <div className="checking" style={{ padding: "6px 0 10px" }}>
                 <div className="prog-n tab">
-                  {versionProgress.phase === "install" ? `Installing game ${versionProgress.version} — click No if it asks to uninstall your existing game` : `Downloading game ${versionProgress.version}…`}
+                  {versionProgress.phase === "install" ? `Installing game ${versionProgress.version} (this can take a minute) — click No if Windows asks to uninstall your existing game` : `Downloading game ${versionProgress.version}…`}
                 </div>
                 <div className="prog"><i className={versionProgress.pct < 0 ? "indet" : ""} style={versionProgress.pct >= 0 ? { width: `${versionProgress.pct}%` } : { width: "40%" }} /></div>
               </div>

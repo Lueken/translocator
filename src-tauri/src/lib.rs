@@ -118,14 +118,31 @@ fn open_install_folder(app: AppHandle, path: String) -> Result<(), String> {
 }
 
 /// Create a new installation folder pinned to `version` (the version should be
-/// ensured/downloaded first). Returns the new folder path.
+/// ensured/downloaded first). If `seed_from` is set, copy game settings
+/// (keybinds/graphics, minus auth) from it: a real path, or "__base__" for the
+/// base game's VintagestoryData. Returns the new folder path.
 #[tauri::command]
 fn create_installation(
+    app: AppHandle,
     installations_dir: String,
     name: String,
     version: String,
+    seed_from: Option<String>,
 ) -> Result<String, String> {
-    installations::create(&PathBuf::from(installations_dir), &name, &version)
+    use tauri::Manager;
+    let path = installations::create(&PathBuf::from(&installations_dir), &name, &version)?;
+    if let Some(src) = seed_from {
+        let source = if src == "__base__" {
+            app.path()
+                .data_dir()
+                .map_err(|e| e.to_string())?
+                .join("VintagestoryData")
+        } else {
+            PathBuf::from(src)
+        };
+        let _ = installations::seed_clientsettings(&source, &PathBuf::from(&path));
+    }
+    Ok(path)
 }
 
 // ---- game versions (shared, deduplicated binary cache) ----

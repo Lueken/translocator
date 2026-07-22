@@ -190,6 +190,40 @@ fn slugify(name: &str) -> String {
     }
 }
 
+/// Auth/session fields that must NEVER be copied between installs (copying a
+/// stale session is the exact bug that breaks the incumbents' carryover).
+const AUTH_KEYS: &[&str] = &[
+    "sessionkey",
+    "sessionsignature",
+    "mptoken",
+    "useremail",
+    "playeruid",
+    "playername",
+    "entitlements",
+    "hostgameserver",
+];
+
+/// Copy the game's client settings (keybinds, graphics, audio, GUI scale, ...)
+/// from `source_dir` into `dest_dir`, STRIPPING the auth/session fields so a new
+/// install inherits your dialed-in settings but gets its own freshly stamped
+/// login at launch. Returns true if a source clientsettings.json was found.
+pub fn seed_clientsettings(source_dir: &Path, dest_dir: &Path) -> Result<bool, String> {
+    let text = match std::fs::read_to_string(source_dir.join("clientsettings.json")) {
+        Ok(t) => t,
+        Err(_) => return Ok(false),
+    };
+    let mut v: serde_json::Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
+    if let Some(ss) = v.get_mut("stringSettings").and_then(|s| s.as_object_mut()) {
+        for k in AUTH_KEYS {
+            ss.remove(*k);
+        }
+    }
+    std::fs::create_dir_all(dest_dir).map_err(|e| e.to_string())?;
+    let out = serde_json::to_string_pretty(&v).map_err(|e| e.to_string())?;
+    std::fs::write(dest_dir.join("clientsettings.json"), out).map_err(|e| e.to_string())?;
+    Ok(true)
+}
+
 /// Create a fresh installation: a new isolated dataPath folder (with a Mods/
 /// dir) and its metadata pinned to `version`. Returns the new folder path.
 pub fn create(installations_dir: &Path, name: &str, version: &str) -> Result<String, String> {
