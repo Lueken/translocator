@@ -163,6 +163,50 @@ pub fn list(installations_dir: &Path, default_version: &str) -> Result<Vec<Insta
     Ok(cards)
 }
 
+fn slugify(name: &str) -> String {
+    let s: String = name
+        .chars()
+        .map(|c| if c.is_alphanumeric() { c } else { '-' })
+        .collect();
+    let s = s.trim_matches('-').to_string();
+    // collapse repeated hyphens
+    let mut out = String::new();
+    let mut prev_dash = false;
+    for c in s.chars() {
+        if c == '-' {
+            if !prev_dash {
+                out.push('-');
+            }
+            prev_dash = true;
+        } else {
+            out.push(c);
+            prev_dash = false;
+        }
+    }
+    if out.is_empty() {
+        "installation".into()
+    } else {
+        out
+    }
+}
+
+/// Create a fresh installation: a new isolated dataPath folder (with a Mods/
+/// dir) and its metadata pinned to `version`. Returns the new folder path.
+pub fn create(installations_dir: &Path, name: &str, version: &str) -> Result<String, String> {
+    let dir = installations_dir.join(slugify(name));
+    if dir.exists() {
+        return Err(format!("a folder for '{name}' already exists"));
+    }
+    std::fs::create_dir_all(dir.join("Mods")).map_err(|e| e.to_string())?;
+    let meta = InstallationMeta {
+        name: name.to_string(),
+        version: version.to_string(),
+        ..Default::default()
+    };
+    write_meta(&dir, &meta)?;
+    Ok(dir.to_string_lossy().into_owned())
+}
+
 /// Delete an installation folder outright. The UI guards this with a confirm.
 pub fn delete(path: &Path) -> Result<(), String> {
     if !path.exists() {

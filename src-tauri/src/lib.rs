@@ -15,6 +15,7 @@ mod mods;
 mod session;
 mod store;
 mod updates;
+mod versions;
 
 use models::Account;
 use serde::Serialize;
@@ -116,6 +117,45 @@ fn open_install_folder(app: AppHandle, path: String) -> Result<(), String> {
     app.opener().open_path(path, None::<&str>).map_err(|e| e.to_string())
 }
 
+/// Create a new installation folder pinned to `version` (the version should be
+/// ensured/downloaded first). Returns the new folder path.
+#[tauri::command]
+fn create_installation(
+    installations_dir: String,
+    name: String,
+    version: String,
+) -> Result<String, String> {
+    installations::create(&PathBuf::from(installations_dir), &name, &version)
+}
+
+// ---- game versions (shared, deduplicated binary cache) ----
+
+/// Installable Windows versions from the official manifest, newest first, each
+/// flagged if already cached.
+#[tauri::command]
+async fn list_available_versions(app: AppHandle) -> Result<Vec<versions::AvailableVersion>, String> {
+    versions::fetch_available(&app).await
+}
+
+/// Cached version strings (downloaded + installed).
+#[tauri::command]
+fn list_cached_versions(app: AppHandle) -> Vec<String> {
+    versions::list_cached(&app)
+}
+
+/// Ensure a version is in the cache (download + silent install if needed).
+/// Emits "version-progress". Returns the cached exe path.
+#[tauri::command]
+async fn ensure_version(app: AppHandle, version: String, url: String) -> Result<String, String> {
+    versions::ensure_version(&app, &version, &url).await
+}
+
+/// Remove a cached version's binaries.
+#[tauri::command]
+fn remove_version(app: AppHandle, version: String) -> Result<(), String> {
+    versions::remove_cached(&app, &version)
+}
+
 /// Result of a play attempt.
 #[derive(Serialize)]
 #[serde(tag = "status", rename_all = "camelCase")]
@@ -151,6 +191,23 @@ async fn play(
     let dir = PathBuf::from(&install_dir);
     let meta = installations::read_meta(&dir).unwrap_or_default();
 
+    // Resolve the game binary: prefer our cached copy for the install's pinned
+    // version; fall back to the caller-provided exe (e.g. an existing VS
+    // Launcher binary) so already-set-up installs keep working.
+    let exe = if !meta.version.is_empty() {
+        versions::exe_path(&app, &meta.version)
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or(game_exe)
+    } else {
+        game_exe
+    };
+    if !std::path::Path::new(&exe).exists() {
+        return Err(format!(
+            "Game {} isn't installed. Open this installation's settings to download it.",
+            if meta.version.is_empty() { "binary".into() } else { meta.version.clone() }
+        ));
+    }
+
     // 2. Optional backup before playing, then stamp the validated session.
     if meta.auto_backup {
         let _ = backup::backup_mods(&dir);
@@ -160,7 +217,7 @@ async fn play(
     // 3. Launch with the install's params/env and wait; time the session.
     let started = std::time::Instant::now();
     let exit_code = launch::launch_and_wait(
-        &game_exe,
+        &exe,
         &dir,
         Some(&meta.start_params),
         Some(&meta.env_vars),
@@ -289,6 +346,11 @@ pub fn run() {
             save_installation,
             delete_installation,
             open_install_folder,
+            create_installation,
+            list_available_versions,
+            list_cached_versions,
+            ensure_version,
+            remove_version,
             play,
             search_mods,
             install_mod,

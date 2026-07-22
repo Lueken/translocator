@@ -48,6 +48,7 @@ type ModUpdate = {
   latest_compatible: string | null;
 };
 type BackupInfo = { id: string; mod_count: number; created: string };
+type AvailableVersion = { version: string; url: string; md5: string; filesize: string; cached: boolean };
 type Theme = "almanac" | "workshop" | "terminal";
 type View = "installations" | "updates" | "mods" | "account" | "settings";
 type Toast = { id: number; msg: string; undo?: () => void; ok?: boolean };
@@ -207,6 +208,14 @@ function App() {
   const [results, setResults] = useState<ModSummary[]>([]);
   const [installed, setInstalled] = useState<string[]>([]);
 
+  // game versions (shared dedup cache)
+  const [availableVersions, setAvailableVersions] = useState<AvailableVersion[]>([]);
+  const [versionProgress, setVersionProgress] = useState<{ version: string; phase: string; pct: number } | null>(null);
+  const [creating, setCreating] = useState(false);
+  const [createName, setCreateName] = useState("");
+  const [createVersion, setCreateVersion] = useState("");
+  const [cachedVersions, setCachedVersions] = useState<string[]>([]);
+
   const [view, setView] = useState<View>("updates");
   const [theme, setTheme] = useState<Theme>(() => (localStorage.getItem("tl-theme") as Theme) || "almanac");
   const [toasts, setToasts] = useState<Toast[]>([]);
@@ -232,15 +241,21 @@ function App() {
         say(`Restored session for ${acct.playername}.`);
       }
       await refreshInstalls();
+      fetchVersions();
     })();
     const un = listen<{ done: number; total: number }>("check-progress", (e) => setProgress(e.payload));
     const un2 = listen<{ modid: string; received: number; total: number }>("install-progress", (e) => {
       const { modid, received, total } = e.payload;
       setInstalling({ modid, pct: total > 0 ? Math.min(100, (received / total) * 100) : -1 });
     });
+    const un3 = listen<{ version: string; phase: string; received: number; total: number }>("version-progress", (e) => {
+      const { version, phase, received, total } = e.payload;
+      setVersionProgress({ version, phase, pct: total > 0 ? Math.min(100, (received / total) * 100) : -1 });
+    });
     return () => {
       un.then((f) => f());
       un2.then((f) => f());
+      un3.then((f) => f());
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -319,6 +334,69 @@ function App() {
       await invoke("open_install_folder", { path });
     } catch (e) {
       say(`Open folder error: ${e}`);
+    }
+  }
+  async function fetchVersions() {
+    try {
+      setAvailableVersions(await invoke<AvailableVersion[]>("list_available_versions"));
+      setCachedVersions(await invoke<string[]>("list_cached_versions"));
+    } catch (e) {
+      say(`Version list error: ${e}`);
+    }
+  }
+  // Ensure a version is downloaded + installed in the shared cache. Returns
+  // false if it failed (caller aborts). Already-cached versions return instantly.
+  async function ensureVersion(version: string): Promise<boolean> {
+    const av = availableVersions.find((v) => v.version === version);
+    if (av?.cached || cachedVersions.includes(version)) return true;
+    if (!av) {
+      say(`Version ${version} is not in the manifest; can't auto-install.`);
+      toast(`Can't install ${version}: not found`, undefined, false);
+      return false;
+    }
+    setVersionProgress({ version, phase: "download", pct: -1 });
+    try {
+      say(`Downloading + installing game ${version} (${av.filesize}) ...`);
+      await invoke("ensure_version", { version, url: av.url });
+      say(`✓ Game ${version} is ready in the cache.`);
+      toast(`Installed game ${version}`);
+      await fetchVersions();
+      return true;
+    } catch (e) {
+      say(`Version install error: ${e}`);
+      toast(`Failed to install ${version}`, undefined, false);
+      return false;
+    } finally {
+      setVersionProgress(null);
+    }
+  }
+  async function doCreate() {
+    const name = createName.trim();
+    if (!name || !createVersion) return;
+    const ok = await ensureVersion(createVersion);
+    if (!ok) return;
+    try {
+      const path = await invoke<string>("create_installation", { installationsDir, name, version: createVersion });
+      say(`Created installation ${name} on ${createVersion}.`);
+      toast(`Created ${name}`);
+      setCreating(false);
+      setCreateName("");
+      await refreshInstalls();
+      setTarget(path);
+      setView("updates");
+    } catch (e) {
+      say(`Create error: ${e}`);
+      toast(`Create failed: ${e}`, undefined, false);
+    }
+  }
+  async function removeVersion(version: string) {
+    try {
+      await invoke("remove_version", { version });
+      say(`Removed cached game ${version}.`);
+      toast(`Removed game ${version}`);
+      await fetchVersions();
+    } catch (e) {
+      say(`Remove version error: ${e}`);
     }
   }
   async function deleteInstallation(card: InstallationCard) {
@@ -862,6 +940,12 @@ function App() {
                 <div><div className="eyebrow">Installations</div><h1 className="title">Your installations</h1></div>
                 <span className="grow" />
                 <button className="btn" onClick={refreshInstalls}>Refresh</button>
+                <button className="cta" onClick={() => {
+                  if (!availableVersions.length) fetchVersions();
+                  setCreateVersion(availableVersions[0]?.version ?? gameVersion);
+                  setCreateName("");
+                  setCreating(true);
+                }}>+ New installation</button>
               </div>
               <div className="view">
                 {installs.length === 0 ? (
@@ -972,7 +1056,26 @@ function App() {
               <div className="view" style={{ maxWidth: 640 }}>
                 <label className="field"><span className="lab">Game executable</span><input value={gameExe} onChange={(e) => setGameExe(e.target.value)} /></label>
                 <label className="field"><span className="lab">Installations folder</span><input value={installationsDir} onChange={(e) => setInstallationsDir(e.target.value)} /></label>
-                <label className="field"><span className="lab">Game version (for compatibility)</span><input style={{ width: 120 }} value={gameVersion} onChange={(e) => setGameVersion(e.target.value)} /></label>
+                <label className="field"><span className="lab">Default game version (for newly imported installs)</span><input style={{ width: 120 }} value={gameVersion} onChange={(e) => setGameVersion(e.target.value)} /></label>
+
+                <div className="field">
+                  <span className="lab">Downloaded game versions (shared across installs)</span>
+                  {cachedVersions.length === 0 ? (
+                    <p className="muted">None yet. Versions download on demand when an installation needs one.</p>
+                  ) : (
+                    <div className="list">
+                      {cachedVersions.map((v) => {
+                        const used = installs.filter((i) => i.meta.version === v).length;
+                        return (
+                          <div className="li" key={v}>
+                            <span><span className="nm">{v}</span> <span className="meta">{used ? `used by ${used} install${used === 1 ? "" : "s"}` : "not used by any install"}</span></span>
+                            <button className="mini" disabled={used > 0} title={used > 0 ? "Still used by an installation" : "Remove downloaded binaries"} onClick={() => removeVersion(v)}>Remove</button>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
 
                 <div className="field">
                   <span className="lab">Theme</span>
@@ -1023,7 +1126,20 @@ function App() {
             <label className="field"><span className="lab">Name</span>
               <input value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })} /></label>
             <label className="field"><span className="lab">Game version</span>
-              <input style={{ width: 140 }} value={draft.version} onChange={(e) => setDraft({ ...draft, version: e.target.value })} /></label>
+              <select value={draft.version} onChange={(e) => setDraft({ ...draft, version: e.target.value })}>
+                {draft.version && !availableVersions.some((v) => v.version === draft.version) && (
+                  <option value={draft.version}>{draft.version} (current)</option>
+                )}
+                {availableVersions.map((v) => (
+                  <option key={v.version} value={v.version}>
+                    {v.version}{v.cached ? "  ✓ downloaded" : `  ·  ${v.filesize}`}
+                  </option>
+                ))}
+              </select>
+            </label>
+            {draft.version !== editing.meta.version && !availableVersions.find((v) => v.version === draft.version)?.cached && (
+              <p className="muted" style={{ margin: "-6px 0 10px" }}>Changing to {draft.version} will download it (your saves and mods stay).</p>
+            )}
             <label className="field"><span className="lab">Start parameters</span>
               <input value={draft.start_params} placeholder="e.g. --openWorld ..." onChange={(e) => setDraft({ ...draft, start_params: e.target.value })} /></label>
             <label className="field"><span className="lab">Environment variables</span>
@@ -1032,11 +1148,25 @@ function App() {
               <input type="checkbox" checked={draft.auto_backup} onChange={(e) => setDraft({ ...draft, auto_backup: e.target.checked })} />
               <span>Back up mods before playing</span>
             </label>
+            {versionProgress && (
+              <div className="checking" style={{ padding: "6px 0 10px" }}>
+                <div className="prog-n tab">{versionProgress.phase === "install" ? "Installing" : "Downloading"} game {versionProgress.version}…</div>
+                <div className="prog"><i className={versionProgress.pct < 0 ? "indet" : ""} style={versionProgress.pct >= 0 ? { width: `${versionProgress.pct}%` } : { width: "40%" }} /></div>
+              </div>
+            )}
             <div className="acts" style={{ justifyContent: "space-between" }}>
               <button className="danger" onClick={() => { setConfirmDelete(editing); setEditing(null); }}>Delete…</button>
               <span style={{ display: "flex", gap: 8 }}>
                 <button className="btn" onClick={() => setEditing(null)}>Cancel</button>
-                <button className="cta" onClick={async () => { await saveInstallation(editing.path, draft); setEditing(null); toast(`Saved ${draft.name}`); }}>Save</button>
+                <button className="cta" disabled={!!versionProgress} onClick={async () => {
+                  if (draft.version && draft.version !== editing.meta.version) {
+                    const ok = await ensureVersion(draft.version);
+                    if (!ok) return;
+                  }
+                  await saveInstallation(editing.path, draft);
+                  setEditing(null);
+                  toast(`Saved ${draft.name}`);
+                }}>Save</button>
               </span>
             </div>
           </div>
@@ -1056,6 +1186,42 @@ function App() {
             <div className="acts">
               <button className="btn" onClick={() => setConfirmDelete(null)}>Cancel</button>
               <button className="danger" onClick={() => deleteInstallation(confirmDelete)}>Delete permanently</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* create installation modal */}
+      {creating && (
+        <div className="overlay" onClick={() => !versionProgress && setCreating(false)}>
+          <div className="modal wide" onClick={(e) => e.stopPropagation()}>
+            <h3>New installation</h3>
+            <label className="field"><span className="lab">Name</span>
+              <input autoFocus value={createName} placeholder="e.g. Test World" onChange={(e) => setCreateName(e.target.value)} /></label>
+            <label className="field"><span className="lab">Game version</span>
+              <select value={createVersion} onChange={(e) => setCreateVersion(e.target.value)}>
+                {availableVersions.length === 0 && <option value="">Loading versions…</option>}
+                {availableVersions.map((v) => (
+                  <option key={v.version} value={v.version}>
+                    {v.version}{v.cached ? "  ✓ downloaded" : `  ·  ${v.filesize}`}
+                  </option>
+                ))}
+              </select>
+            </label>
+            {createVersion && !availableVersions.find((v) => v.version === createVersion)?.cached && (
+              <p className="muted" style={{ margin: "-6px 0 10px" }}>
+                {createVersion} will be downloaded once ({availableVersions.find((v) => v.version === createVersion)?.filesize}) and shared with any other installation on this version.
+              </p>
+            )}
+            {versionProgress && (
+              <div className="checking" style={{ padding: "6px 0 10px" }}>
+                <div className="prog-n tab">{versionProgress.phase === "install" ? "Installing" : "Downloading"} game {versionProgress.version}…</div>
+                <div className="prog"><i className={versionProgress.pct < 0 ? "indet" : ""} style={versionProgress.pct >= 0 ? { width: `${versionProgress.pct}%` } : { width: "40%" }} /></div>
+              </div>
+            )}
+            <div className="acts">
+              <button className="btn" disabled={!!versionProgress} onClick={() => setCreating(false)}>Cancel</button>
+              <button className="cta" disabled={!createName.trim() || !createVersion || !!versionProgress} onClick={doCreate}>Create</button>
             </div>
           </div>
         </div>
