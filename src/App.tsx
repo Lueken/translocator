@@ -38,7 +38,7 @@ type ModUpdate = {
 type BackupInfo = { id: string; mod_count: number; created: string };
 type Theme = "almanac" | "workshop" | "terminal";
 type View = "installations" | "updates" | "mods" | "account" | "settings";
-type Toast = { id: number; msg: string; undo?: () => void };
+type Toast = { id: number; msg: string; undo?: () => void; ok?: boolean };
 
 const DEFAULT_INSTALLS = "C:\\Users\\31686\\AppData\\Roaming\\VSLInstallations";
 const DEFAULT_GAME_EXE = "C:\\Users\\31686\\AppData\\Roaming\\VSLGameVersions\\1.22.3\\Vintagestory.exe";
@@ -181,9 +181,9 @@ function App() {
   const toastId = useRef(0);
 
   const say = (line: string) => setLog((l) => [`${new Date().toLocaleTimeString()}  ${line}`, ...l].slice(0, 200));
-  const toast = (msg: string, undo?: () => void) => {
+  const toast = (msg: string, undo?: () => void, ok = true) => {
     const id = ++toastId.current;
-    setToasts((t) => [...t, { id, msg, undo }]);
+    setToasts((t) => [...t, { id, msg, undo, ok }]);
     setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), 7000);
   };
 
@@ -288,7 +288,7 @@ function App() {
       const res = await invoke<PlayResult>("play", { gameExe, installDir: inst.path, account, startParams: null });
       if (res.status === "needsRelogin") {
         say(`✗ Session rejected by server (${res.reason}). Re-login needed.`);
-        toast("Session expired. Sign in again on the Account screen.");
+        toast("Session expired. Sign in again on the Account screen.", undefined, false);
         setAccount(null);
       } else {
         say(`■ ${inst.name} exited (code ${res.exit_code}).`);
@@ -468,7 +468,7 @@ function App() {
       }
     }
     const ok = await copyText(lines.join("\n"));
-    toast(ok ? "Update report copied to clipboard" : "Copy failed; see log");
+    toast(ok ? "Update report copied to clipboard" : "Copy failed; see log", undefined, ok);
     if (!ok) say(lines.join("\n"));
   }
   function ignoreVersion(u: ModUpdate) {
@@ -692,25 +692,27 @@ function App() {
           {/* ---------------- UPDATES ---------------- */}
           {view === "updates" && (
             <>
-              <div className="topbar">
+              <div className="lhd">
                 <div>
                   <div className="eyebrow">Ledger of Changes</div>
-                  <h1 className="title">{targetName || "Updates"}</h1>
+                  <h1 className="title lhd-title">{targetName || "Updates"}</h1>
                 </div>
-                <span className="grow" />
-                <select value={target} onChange={(e) => setTarget(e.target.value)}>
-                  {installs.map((i) => (
-                    <option key={i.path} value={i.path}>{displayName(i.name)}</option>
-                  ))}
-                </select>
-                <span className="pchip">Game <b>{gameVersion}</b></span>
-                <button className="btn" disabled={busy || !target} onClick={checkUpdates}>Check for updates</button>
-                {readyUpdates.length > 0 && (
-                  <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 3 }}>
-                    <button className="cta" disabled={busy} onClick={updateAllLatest}>Update all compatible</button>
-                    <span style={{ fontSize: 11, color: "var(--fg-muted)" }}>Mods back up before update</span>
-                  </div>
-                )}
+                <div className="controls">
+                  <select value={target} onChange={(e) => setTarget(e.target.value)}>
+                    {installs.map((i) => (
+                      <option key={i.path} value={i.path}>{displayName(i.name)}</option>
+                    ))}
+                  </select>
+                  <span className="pchip">Game <b>{gameVersion}</b></span>
+                  <span className="grow" />
+                  <button className="btn" disabled={busy || !target} onClick={checkUpdates}>Check for updates</button>
+                  {readyUpdates.length > 0 && (
+                    <div className="ctacol">
+                      <button className="cta" disabled={busy} onClick={updateAllLatest}>Update all compatible</button>
+                      <span className="capt">Mods back up before update</span>
+                    </div>
+                  )}
+                </div>
               </div>
 
               {updates.length > 0 && (
@@ -939,7 +941,7 @@ function App() {
       <div className="toasts">
         {toasts.map((t) => (
           <div className="toast" key={t.id}>
-            {t.msg}
+            <span className="toast-msg">{t.ok !== false ? "✓ " : ""}{t.msg}</span>
             {t.undo && <button className="undo" onClick={() => { t.undo!(); setToasts((x) => x.filter((y) => y.id !== t.id)); }}>Undo</button>}
           </div>
         ))}
