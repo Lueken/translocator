@@ -205,6 +205,10 @@ nav{display:flex;flex-direction:column;margin-top:2px}
 .field{display:block;margin-bottom:14px}
 .field .lab{font-size:12px;letter-spacing:.04em;color:var(--fg-muted);display:block;margin-bottom:5px;text-transform:uppercase}
 .field input{width:100%}
+.lab-hint{text-transform:none;letter-spacing:0;color:var(--fg-faint);font-weight:400}
+.path-row{display:flex;gap:8px;align-items:stretch}
+.path-row input{flex:1;min-width:0}
+.path-row .btn{flex:none;white-space:nowrap}
 
 .summary{display:flex;align-items:center;gap:16px;flex-wrap:wrap;margin-bottom:12px}
 .summary .say{font-family:var(--nm-font);font-size:16px;color:var(--fg)}

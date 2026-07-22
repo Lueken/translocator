@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import "./themes.css";
 
 // ---- Types mirroring the Rust command surface (src-tauri/src/lib.rs) ----
@@ -68,8 +69,8 @@ type Theme = "almanac" | "workshop" | "terminal";
 type View = "installations" | "updates" | "mods" | "worlds" | "account" | "settings";
 type Toast = { id: number; msg: string; undo?: () => void; ok?: boolean };
 
-const DEFAULT_INSTALLS = "C:\\Users\\31686\\AppData\\Roaming\\VSLInstallations";
-const DEFAULT_GAME_EXE = "C:\\Users\\31686\\AppData\\Roaming\\VSLGameVersions\\1.22.3\\Vintagestory.exe";
+// Paths start from localStorage; on first run they're filled from
+// `suggested_paths` (resolved to this machine's %APPDATA%), never hardcoded.
 
 const THEMES: { id: Theme; name: string; desc: string; colors: string[] }[] = [
   { id: "almanac", name: "Temporal Almanac", desc: "Parchment ledger, serif", colors: ["#0E1512", "#E9DDC4", "#B26A22", "#3C7A5C"] },
@@ -203,8 +204,8 @@ function Titlebar() {
 }
 
 function App() {
-  const [gameExe, setGameExe] = useState(DEFAULT_GAME_EXE);
-  const [installationsDir, setInstallationsDir] = useState(DEFAULT_INSTALLS);
+  const [gameExe, setGameExe] = useState(() => localStorage.getItem("tl-game-exe") || "");
+  const [installationsDir, setInstallationsDir] = useState(() => localStorage.getItem("tl-installs") || "");
   const [gameVersion, setGameVersion] = useState("1.22.3");
 
   const [email, setEmail] = useState("");
@@ -269,6 +270,12 @@ function App() {
     document.documentElement.setAttribute("data-theme", theme);
     localStorage.setItem("tl-theme", theme);
   }, [theme]);
+  useEffect(() => {
+    if (gameExe) localStorage.setItem("tl-game-exe", gameExe);
+  }, [gameExe]);
+  useEffect(() => {
+    if (installationsDir) localStorage.setItem("tl-installs", installationsDir);
+  }, [installationsDir]);
 
   useEffect(() => {
     (async () => {
@@ -277,7 +284,21 @@ function App() {
         setAccount(acct);
         say(`Restored session for ${acct.playername}.`);
       }
-      await refreshInstalls();
+      // Resolve first-run defaults for this machine (no hardcoded paths). Only
+      // fill blanks — a user's saved paths always win.
+      let dir = installationsDir;
+      let exe = gameExe;
+      if (!dir || !exe) {
+        try {
+          const sp = await invoke<{ installations_dir: string; game_exe: string }>("suggested_paths");
+          if (!dir) { dir = sp.installations_dir; setInstallationsDir(dir); }
+          if (!exe) { exe = sp.game_exe; setGameExe(exe); }
+          say(`Using default paths for this machine.`);
+        } catch (e) {
+          say(`Could not resolve default paths: ${e}`);
+        }
+      }
+      await refreshInstalls(dir);
       fetchVersions();
     })();
     const un = listen<{ done: number; total: number }>("check-progress", (e) => setProgress(e.payload));
@@ -354,9 +375,11 @@ function App() {
     setAccount(null);
     say("Logged out.");
   }
-  async function refreshInstalls() {
+  async function refreshInstalls(dirOverride?: string) {
+    const dir = dirOverride ?? installationsDir;
+    if (!dir) return; // paths not resolved yet
     try {
-      const list = await invoke<InstallationCard[]>("list_installations", { installationsDir, defaultVersion: gameVersion });
+      const list = await invoke<InstallationCard[]>("list_installations", { installationsDir: dir, defaultVersion: gameVersion });
       setInstalls(list);
       say(`Found ${list.length} installation(s).`);
     } catch (e) {
@@ -416,6 +439,33 @@ function App() {
       toast(`Delete failed: ${e}`, undefined, false);
     } finally {
       setBusy(false);
+    }
+  }
+  // Native folder picker for the installations directory; re-lists on pick.
+  async function browseInstallsDir() {
+    try {
+      const picked = await openDialog({ directory: true, multiple: false, title: "Choose your installations folder", defaultPath: installationsDir || undefined });
+      if (typeof picked === "string") {
+        setInstallationsDir(picked);
+        await refreshInstalls(picked);
+      }
+    } catch (e) {
+      say(`Folder picker error: ${e}`);
+    }
+  }
+  // Native file picker for the fallback game executable.
+  async function browseGameExe() {
+    try {
+      const picked = await openDialog({
+        directory: false,
+        multiple: false,
+        title: "Choose Vintagestory.exe",
+        defaultPath: gameExe || undefined,
+        filters: [{ name: "Vintage Story", extensions: ["exe"] }],
+      });
+      if (typeof picked === "string") setGameExe(picked);
+    } catch (e) {
+      say(`File picker error: ${e}`);
     }
   }
   async function fetchVersions() {
@@ -1072,7 +1122,7 @@ function App() {
               <div className="topbar">
                 <div><div className="eyebrow">Installations</div><h1 className="title">Your installations</h1></div>
                 <span className="grow" />
-                <button className="btn" onClick={refreshInstalls}>Refresh</button>
+                <button className="btn" onClick={() => refreshInstalls()}>Refresh</button>
                 <button className="cta" onClick={() => {
                   if (!availableVersions.length) fetchVersions();
                   setCreateVersion(availableVersions[0]?.version ?? gameVersion);
@@ -1247,8 +1297,20 @@ function App() {
             <>
               <div className="topbar"><div><div className="eyebrow">Configuration</div><h1 className="title">Settings</h1></div></div>
               <div className="view" style={{ maxWidth: 640 }}>
-                <label className="field"><span className="lab">Game executable</span><input value={gameExe} onChange={(e) => setGameExe(e.target.value)} /></label>
-                <label className="field"><span className="lab">Installations folder</span><input value={installationsDir} onChange={(e) => setInstallationsDir(e.target.value)} /></label>
+                <label className="field">
+                  <span className="lab">Game executable <span className="lab-hint">— fallback; pinned installs launch from downloaded versions</span></span>
+                  <div className="path-row">
+                    <input value={gameExe} onChange={(e) => setGameExe(e.target.value)} placeholder="Vintagestory.exe" />
+                    <button className="btn" type="button" onClick={browseGameExe}>Browse…</button>
+                  </div>
+                </label>
+                <label className="field">
+                  <span className="lab">Installations folder</span>
+                  <div className="path-row">
+                    <input value={installationsDir} onChange={(e) => setInstallationsDir(e.target.value)} onBlur={() => refreshInstalls(installationsDir)} placeholder="Where your installations live" />
+                    <button className="btn" type="button" onClick={browseInstallsDir}>Browse…</button>
+                  </div>
+                </label>
                 <label className="field"><span className="lab">Default game version (for newly imported installs)</span><input style={{ width: 120 }} value={gameVersion} onChange={(e) => setGameVersion(e.target.value)} /></label>
 
                 <div className="field">

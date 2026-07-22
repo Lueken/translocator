@@ -21,7 +21,7 @@ mod worlds;
 use models::Account;
 use serde::Serialize;
 use std::path::PathBuf;
-use tauri::AppHandle;
+use tauri::{AppHandle, Manager};
 
 /// Result of a login attempt, tagged for the frontend.
 #[derive(Serialize)]
@@ -370,6 +370,40 @@ async fn restore_backup(install_dir: String, id: String) -> Result<(), String> {
         .map_err(|e| format!("restore task failed: {e}"))?
 }
 
+/// First-run defaults, resolved from the OS rather than hardcoded, so a fresh
+/// install works on any machine (no baked-in username or VS Launcher paths):
+/// - `installations_dir`: `%APPDATA%\Translocator\Installations` — our own
+///   folder, created if missing so listing and Create both work immediately.
+/// - `game_exe`: the base game the official Anego Studios installer drops at
+///   `%APPDATA%\Vintagestory\Vintagestory.exe`. This is only a fallback — for
+///   installs pinned to a downloaded version, `play` uses our version cache.
+#[derive(Serialize)]
+struct SuggestedPaths {
+    installations_dir: String,
+    game_exe: String,
+}
+
+#[tauri::command]
+fn suggested_paths(app: AppHandle) -> SuggestedPaths {
+    let roaming = app.path().data_dir().ok();
+    let installations_dir = roaming
+        .as_ref()
+        .map(|r| r.join("Translocator").join("Installations"))
+        .map(|p| {
+            let _ = std::fs::create_dir_all(&p);
+            p.to_string_lossy().into_owned()
+        })
+        .unwrap_or_default();
+    let game_exe = roaming
+        .as_ref()
+        .map(|r| r.join("Vintagestory").join("Vintagestory.exe").to_string_lossy().into_owned())
+        .unwrap_or_default();
+    SuggestedPaths {
+        installations_dir,
+        game_exe,
+    }
+}
+
 /// Every world in an installation's `Saves` folder, with parsed metadata (seed,
 /// playstyle, height, versions) and filesystem facts. Reading the small
 /// savegame blobs is fast even for large worlds, but runs off the UI thread so a
@@ -401,6 +435,7 @@ fn delete_world(install_dir: String, world_path: String) -> Result<(), String> {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .invoke_handler(tauri::generate_handler![
             login,
@@ -430,7 +465,8 @@ pub fn run() {
             restore_backup,
             list_worlds,
             backup_world,
-            delete_world
+            delete_world,
+            suggested_paths
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

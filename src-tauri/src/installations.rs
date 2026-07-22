@@ -143,6 +143,11 @@ fn looks_like_install(dir: &Path) -> bool {
 /// Sorted favorites-first, then by name.
 pub fn list(installations_dir: &Path, default_version: &str) -> Result<Vec<InstallationCard>, String> {
     let mut cards = Vec::new();
+    // A not-yet-created folder is normal on first run or after relocating the
+    // path; treat it as "no installations" rather than an error.
+    if !installations_dir.exists() {
+        return Ok(cards);
+    }
     for entry in std::fs::read_dir(installations_dir).map_err(|e| format!("read_dir failed: {e}"))? {
         let entry = entry.map_err(|e| e.to_string())?;
         if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
