@@ -77,6 +77,11 @@ struct ModDetailResponse {
 struct ModDetail {
     #[serde(default)]
     releases: Vec<Release>,
+    #[serde(default)]
+    text: String,
+    // Present once upstream exposes it (anegostudios/vsmoddb#143); harmless until then.
+    #[serde(default)]
+    donateurl: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -125,6 +130,55 @@ pub async fn install_latest(install_dir: &Path, modidstr: &str) -> Result<String
     };
     std::fs::write(mods_dir.join(&fname), &bytes).map_err(|e| e.to_string())?;
     Ok(fname)
+}
+
+/// Donation links for a mod: the API's `donateurl` field if present (once
+/// upstream exposes it), otherwise donation URLs parsed from the mod's HTML
+/// description. Reference-only — surfaces the author's own link, re-hosts nothing.
+pub async fn get_donations(modidstr: &str) -> Result<Vec<String>, String> {
+    let detail: ModDetailResponse = reqwest::Client::new()
+        .get(format!("{MODDB}/mod/{modidstr}"))
+        .send()
+        .await
+        .map_err(|e| format!("mod detail failed: {e}"))?
+        .json()
+        .await
+        .map_err(|e| format!("mod detail parse: {e}"))?;
+    let m = detail.mod_detail;
+    if let Some(url) = m.donateurl.filter(|s| !s.trim().is_empty()) {
+        return Ok(vec![url]);
+    }
+    Ok(extract_donation_links(&m.text))
+}
+
+/// Extract donation URLs (Patreon, Ko-fi, PayPal, etc.) from an HTML blob.
+fn extract_donation_links(html: &str) -> Vec<String> {
+    const HOSTS: &[&str] = &[
+        "patreon.com",
+        "ko-fi.com",
+        "paypal.me",
+        "paypal.com",
+        "buymeacoffee.com",
+        "liberapay.com",
+        "github.com/sponsors",
+        "boosty.to",
+    ];
+    let mut out: Vec<String> = Vec::new();
+    let mut rest = html;
+    while let Some(pos) = rest.find("http") {
+        let start = &rest[pos..];
+        let end = start
+            .find(|c: char| {
+                matches!(c, '"' | '\'' | '<' | '>' | ')' | ' ' | '\n' | '\r' | '\t' | '\\')
+            })
+            .unwrap_or(start.len());
+        let url = &start[..end];
+        if HOSTS.iter().any(|h| url.contains(h)) && !out.iter().any(|u| u == url) {
+            out.push(url.to_string());
+        }
+        rest = &start[end.max(4)..];
+    }
+    out
 }
 
 /// Zip filenames currently in the installation's Mods folder.

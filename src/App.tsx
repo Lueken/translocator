@@ -196,6 +196,16 @@ function App() {
     }
   }
 
+  async function doTip(m: ModSummary) {
+    try {
+      const links = await invoke<string[]>("mod_donations", { modidstr: m.modidstr });
+      if (links.length) say(`♥ Tip ${m.name}: ${links.join("   ")}`);
+      else say(`${m.name}: no donation link found.`);
+    } catch (e) {
+      say(`Tip lookup error: ${e}`);
+    }
+  }
+
   const box: React.CSSProperties = {
     border: "1px solid #ccc",
     borderRadius: 8,
@@ -350,9 +360,14 @@ function App() {
                     by {m.author} · {m.downloads.toLocaleString()} dl
                   </small>
                 </span>
-                <button disabled={busy || !target} onClick={() => doInstall(m)}>
-                  Install
-                </button>
+                <span style={{ display: "flex", gap: 6 }}>
+                  <button onClick={() => doTip(m)} title="Show author donation link">
+                    ♥
+                  </button>
+                  <button disabled={busy || !target} onClick={() => doInstall(m)}>
+                    Install
+                  </button>
+                </span>
               </li>
             ))}
           </ul>

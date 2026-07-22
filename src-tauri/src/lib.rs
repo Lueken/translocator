@@ -178,6 +178,13 @@ async fn install_mod(install_dir: String, modidstr: String) -> Result<String, St
     mods::install_latest(&PathBuf::from(install_dir), &modidstr).await
 }
 
+/// Author donation link(s) for a mod — the structured `donateurl` field if the
+/// API exposes it, otherwise parsed from the description. Reference-only.
+#[tauri::command]
+async fn mod_donations(modidstr: String) -> Result<Vec<String>, String> {
+    mods::get_donations(&modidstr).await
+}
+
 /// Zip filenames currently in an install's Mods folder.
 #[tauri::command]
 fn list_mod_files(install_dir: String) -> Result<Vec<String>, String> {
@@ -196,6 +203,7 @@ pub fn run() {
             play,
             search_mods,
             install_mod,
+            mod_donations,
             list_mod_files
         ])
         .run(tauri::generate_context!())
