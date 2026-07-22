@@ -1138,7 +1138,9 @@ function App() {
               </select>
             </label>
             {draft.version !== editing.meta.version && !availableVersions.find((v) => v.version === draft.version)?.cached && (
-              <p className="muted" style={{ margin: "-6px 0 10px" }}>Changing to {draft.version} will download it (your saves and mods stay).</p>
+              <div className="warn-note" style={{ marginTop: -4 }}>
+                Changing to {draft.version} downloads it (your saves and mods stay). VS's installer will ask to uninstall your existing game — click <b>No</b>.
+              </div>
             )}
             <label className="field"><span className="lab">Start parameters</span>
               <input value={draft.start_params} placeholder="e.g. --openWorld ..." onChange={(e) => setDraft({ ...draft, start_params: e.target.value })} /></label>
@@ -1150,7 +1152,9 @@ function App() {
             </label>
             {versionProgress && (
               <div className="checking" style={{ padding: "6px 0 10px" }}>
-                <div className="prog-n tab">{versionProgress.phase === "install" ? "Installing" : "Downloading"} game {versionProgress.version}…</div>
+                <div className="prog-n tab">
+                  {versionProgress.phase === "install" ? `Installing game ${versionProgress.version} — click No if it asks to uninstall your existing game` : `Downloading game ${versionProgress.version}…`}
+                </div>
                 <div className="prog"><i className={versionProgress.pct < 0 ? "indet" : ""} style={versionProgress.pct >= 0 ? { width: `${versionProgress.pct}%` } : { width: "40%" }} /></div>
               </div>
             )}
@@ -1209,13 +1213,21 @@ function App() {
               </select>
             </label>
             {createVersion && !availableVersions.find((v) => v.version === createVersion)?.cached && (
-              <p className="muted" style={{ margin: "-6px 0 10px" }}>
-                {createVersion} will be downloaded once ({availableVersions.find((v) => v.version === createVersion)?.filesize}) and shared with any other installation on this version.
-              </p>
+              <>
+                <p className="muted" style={{ margin: "-6px 0 8px" }}>
+                  {createVersion} will be downloaded once ({availableVersions.find((v) => v.version === createVersion)?.filesize}) and shared with any other installation on this version.
+                </p>
+                <div className="warn-note">
+                  <b>Heads up:</b> Vintage Story's installer will ask <i>"An old version was detected. Uninstall it first?"</i> —
+                  click <b>No</b>. Your existing game stays untouched; the new version installs alongside it.
+                </div>
+              </>
             )}
             {versionProgress && (
               <div className="checking" style={{ padding: "6px 0 10px" }}>
-                <div className="prog-n tab">{versionProgress.phase === "install" ? "Installing" : "Downloading"} game {versionProgress.version}…</div>
+                <div className="prog-n tab">
+                  {versionProgress.phase === "install" ? `Installing game ${versionProgress.version} — click No if it asks to uninstall your existing game` : `Downloading game ${versionProgress.version}…`}
+                </div>
                 <div className="prog"><i className={versionProgress.pct < 0 ? "indet" : ""} style={versionProgress.pct >= 0 ? { width: `${versionProgress.pct}%` } : { width: "40%" }} /></div>
               </div>
             )}

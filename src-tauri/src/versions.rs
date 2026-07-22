@@ -30,12 +30,15 @@ pub struct AvailableVersion {
     pub cached: bool,
 }
 
+/// Shared version cache at `%APPDATA%\Translocator\Versions\` (our own clean
+/// name, like VS Launcher's separate versions folder but not VSL's).
 fn cache_root(app: &AppHandle) -> Result<PathBuf, String> {
     let dir = app
         .path()
-        .app_data_dir()
-        .map_err(|e| format!("no app data dir: {e}"))?
-        .join("gameversions");
+        .data_dir()
+        .map_err(|e| format!("no data dir: {e}"))?
+        .join("Translocator")
+        .join("Versions");
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     Ok(dir)
 }
@@ -151,19 +154,11 @@ pub async fn ensure_version(app: &AppHandle, version: &str, url: &str) -> Result
         return Ok(p.to_string_lossy().into_owned());
     }
 
-    // SAFETY: the VS Windows client is a registry-based SYSTEM installer. Running
-    // it detects your existing Vintage Story and can prompt to uninstall it — it
-    // is not safe for a multi-version cache. Disabled until reworked to EXTRACT
-    // the installer's files (no run, no registry, no risk). Existing installs
-    // still launch via the configured game path.
-    let _ = (app, url);
-    return Err(format!(
-        "Downloading game {version} is temporarily disabled while the installer \
-         is reworked to extract files safely (it was prompting to uninstall your \
-         existing Vintage Story). Your existing installs still play normally."
-    ));
-
-    #[allow(unreachable_code)]
+    // The official VS Windows client is an Inno-Setup installer with no
+    // extractable/portable form (innoextract can't crack current Inno Setup —
+    // confirmed by VS Launcher's own author), so we run it silently into the
+    // version folder exactly as VSL does. It may prompt to uninstall an existing
+    // Vintage Story; the UI warns the user to click "No" beforehand.
     #[cfg(not(target_os = "windows"))]
     {
         let _ = (url, version);
