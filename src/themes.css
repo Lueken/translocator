@@ -67,6 +67,16 @@
 }
 
 *{box-sizing:border-box}
+
+/* on-brand scrollbars: accent thumb, no track chrome, per-theme radius */
+*{scrollbar-width:thin;scrollbar-color:color-mix(in srgb,var(--accent) 60%,transparent) transparent}
+::-webkit-scrollbar{width:11px;height:11px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-corner{background:transparent}
+::-webkit-scrollbar-thumb{background:color-mix(in srgb,var(--accent) 55%,transparent);
+  border-radius:var(--radius);border:3px solid transparent;background-clip:content-box}
+::-webkit-scrollbar-thumb:hover{background:var(--accent);border:3px solid transparent;background-clip:content-box}
+
 html,body,#root{height:100%}
 body{margin:0;overflow:hidden;font-family:var(--font-ui);font-size:14px;color:var(--side-fg);
   background:var(--app-bg);-webkit-font-smoothing:antialiased}
