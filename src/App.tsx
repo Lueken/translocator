@@ -1351,12 +1351,12 @@ function App() {
                     <button className="btn" onClick={doLogout}>Log out</button>
                   </>
                 ) : (
-                  <>
-                    <label className="field"><span className="lab">Email</span><input value={email} onChange={(e) => setEmail(e.target.value)} /></label>
-                    <label className="field"><span className="lab">Password</span><input type="password" value={password} onChange={(e) => setPassword(e.target.value)} /></label>
-                    {prelogintoken && <label className="field"><span className="lab">2FA / TOTP code</span><input value={totp} onChange={(e) => setTotp(e.target.value)} /></label>}
-                    <button className="cta" disabled={busy} onClick={doLogin}>{prelogintoken ? "Submit 2FA code" : "Log in"}</button>
-                  </>
+                  <form onSubmit={(e) => { e.preventDefault(); if (!busy) doLogin(); }}>
+                    <label className="field"><span className="lab">Email</span><input type="email" autoComplete="username" value={email} onChange={(e) => setEmail(e.target.value)} /></label>
+                    <label className="field"><span className="lab">Password</span><input type="password" autoComplete="current-password" value={password} onChange={(e) => setPassword(e.target.value)} /></label>
+                    {prelogintoken && <label className="field"><span className="lab">2FA / TOTP code</span><input inputMode="numeric" autoComplete="one-time-code" autoFocus value={totp} onChange={(e) => setTotp(e.target.value)} /></label>}
+                    <button className="cta" type="submit" disabled={busy}>{prelogintoken ? "Submit 2FA code" : "Log in"}</button>
+                  </form>
                 )}
               </div>
             </>
