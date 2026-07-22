@@ -25,6 +25,7 @@ type InstallationMeta = {
   env_vars: string;
   auto_backup: boolean;
   compression: number;
+  backups_limit: number;
   icon: string;
   favorite: boolean;
   last_played: number;
@@ -47,7 +48,7 @@ type ModUpdate = {
   newer: ReleaseInfo[];
   latest_compatible: string | null;
 };
-type BackupInfo = { id: string; mod_count: number; created: string };
+type BackupInfo = { id: string; kind: string; mod_count: number; size: number; created: string };
 type AvailableVersion = { version: string; url: string; md5: string; filesize: string; cached: boolean };
 type Theme = "almanac" | "workshop" | "terminal";
 type View = "installations" | "updates" | "mods" | "account" | "settings";
@@ -78,6 +79,12 @@ const fmtPlaytime = (secs: number) => {
   const m = Math.floor((secs % 3600) / 60);
   if (h) return `${h}h ${m}m played`;
   return m ? `${m}m played` : "under a minute";
+};
+const fmtBytes = (n: number) => {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(0)} KB`;
+  if (n < 1024 * 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(n / (1024 * 1024 * 1024)).toFixed(2)} GB`;
 };
 const fmtLastPlayed = (ms: number) => {
   if (!ms) return "";
@@ -565,13 +572,18 @@ function App() {
     setConfirmRestore(null);
     setBusy(true);
     try {
-      // Safety net first, so the restore itself is undoable.
+      // Safety net first (matching kind), so the restore itself is recoverable.
       try {
-        await invoke<string>("backup_mods", { installDir: target });
+        if (b.kind === "full") {
+          const m = installs.find((i) => i.path === target)?.meta;
+          await invoke<string>("backup_install", { installDir: target, compression: m?.compression ?? 6, keep: m?.backups_limit ?? 5 });
+        } else {
+          await invoke<string>("backup_mods", { installDir: target });
+        }
       } catch { /* non-fatal */ }
-      say(`Restoring backup ${b.id} ...`);
+      say(`Restoring ${b.kind} backup ${b.id} ...`);
       await invoke("restore_backup", { installDir: target, id: b.id });
-      say(`✓ Restored Mods folder to backup ${b.id}.`);
+      say(`✓ Restored ${b.kind === "full" ? "installation" : "Mods folder"} to backup ${b.id}.`);
       toast(`Restored snapshot from ${b.created}`);
       await refreshInstalled(target);
       await refreshBackups(target);
@@ -593,6 +605,23 @@ function App() {
       await refreshBackups(target);
     } catch (e) {
       say(`Backup error: ${e}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function backupFull() {
+    if (!target) return;
+    const m = installs.find((i) => i.path === target)?.meta;
+    setBusy(true);
+    try {
+      say(`Backing up the whole installation (this can take a moment) ...`);
+      const id = await invoke<string>("backup_install", { installDir: target, compression: m?.compression ?? 6, keep: m?.backups_limit ?? 5 });
+      say(`✓ Full backup ${id} created.`);
+      toast(`Backed up the whole installation`);
+      await refreshBackups(target);
+    } catch (e) {
+      say(`Full backup error: ${e}`);
+      toast(`Backup failed: ${e}`, undefined, false);
     } finally {
       setBusy(false);
     }
@@ -926,14 +955,22 @@ function App() {
                   </button>
                   {showBackups && (
                     <div style={{ marginTop: 8 }}>
-                      <button className="btn" disabled={busy || !target} onClick={backupNow} style={{ marginBottom: 8 }}>Back up now</button>
+                      <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+                        <button className="btn" disabled={busy || !target} onClick={backupNow} title="Fast snapshot of just the Mods folder">Back up mods</button>
+                        <button className="btn" disabled={busy || !target} onClick={backupFull} title="Compressed snapshot of the whole install (worlds, config, mods)">Back up everything</button>
+                      </div>
                       {backups.length === 0 ? (
-                        <p className="muted">No backups yet. One is taken automatically before "Update all compatible".</p>
+                        <p className="muted">No backups yet. A Mods backup is taken automatically before "Update all compatible".</p>
                       ) : (
                         <div className="list">
                           {backups.map((b) => (
                             <div className="li" key={b.id}>
-                              <span><b className="nm">{b.created}</b> <span className="meta">{b.mod_count} mod{b.mod_count === 1 ? "" : "s"} · {b.id}</span></span>
+                              <span>
+                                <b className="nm">{b.created}</b>{" "}
+                                <span className="meta">
+                                  {b.kind === "full" ? `full install · ${fmtBytes(b.size)}` : `${b.mod_count} mod${b.mod_count === 1 ? "" : "s"} · ${fmtBytes(b.size)}`}
+                                </span>
+                              </span>
                               <button className="mini" disabled={busy} onClick={() => setConfirmRestore(b)}>Restore</button>
                             </div>
                           ))}
@@ -1119,9 +1156,12 @@ function App() {
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <h3>Restore this snapshot?</h3>
             <p>
-              Your Mods folder will be replaced with the backup from <b>{confirmRestore.created}</b>{" "}
-              ({confirmRestore.mod_count} mod{confirmRestore.mod_count === 1 ? "" : "s"}). The current folder is
-              backed up first, so this can be undone.
+              {confirmRestore.kind === "full" ? (
+                <>The whole installation (worlds, config, mods) will be restored to the snapshot from <b>{confirmRestore.created}</b> ({fmtBytes(confirmRestore.size)}).</>
+              ) : (
+                <>Your Mods folder will be replaced with the backup from <b>{confirmRestore.created}</b> ({confirmRestore.mod_count} mod{confirmRestore.mod_count === 1 ? "" : "s"}).</>
+              )}{" "}
+              A fresh backup is taken first, so this can be undone.
             </p>
             <div className="acts">
               <button className="btn" onClick={() => setConfirmRestore(null)}>Cancel</button>
@@ -1161,8 +1201,16 @@ function App() {
               <input value={draft.env_vars} placeholder="KEY=value, KEY2=value2" onChange={(e) => setDraft({ ...draft, env_vars: e.target.value })} /></label>
             <label className="field row-check">
               <input type="checkbox" checked={draft.auto_backup} onChange={(e) => setDraft({ ...draft, auto_backup: e.target.checked })} />
-              <span>Back up mods before playing</span>
+              <span>Back up the whole installation before playing <span className="muted">(can be slow for large worlds)</span></span>
             </label>
+            <div style={{ display: "flex", gap: 18, flexWrap: "wrap" }}>
+              <label className="field" style={{ flex: "0 0 auto" }}><span className="lab">Backup compression (0–9)</span>
+                <input type="number" min={0} max={9} style={{ width: 80 }} value={draft.compression}
+                  onChange={(e) => setDraft({ ...draft, compression: Math.max(0, Math.min(9, Number(e.target.value) || 0)) })} /></label>
+              <label className="field" style={{ flex: "0 0 auto" }}><span className="lab">Keep last N backups</span>
+                <input type="number" min={1} max={20} style={{ width: 80 }} value={draft.backups_limit}
+                  onChange={(e) => setDraft({ ...draft, backups_limit: Math.max(1, Math.min(20, Number(e.target.value) || 1)) })} /></label>
+            </div>
             {versionProgress && (
               <div className="checking" style={{ padding: "6px 0 10px" }}>
                 <div className="prog-n tab">

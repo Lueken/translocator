@@ -18,11 +18,20 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 const BACKUP_DIR: &str = ".translocator-backups";
 const DEFAULT_KEEP: usize = 5;
+/// Top-level entries never included in a whole-install backup.
+const EXCLUDE_TOP: &[&str] = &[BACKUP_DIR, "Cache", "Logs"];
+/// Top-level files never included (our own metadata; restoring it would revert
+/// name/version/playtime to snapshot time).
+const EXCLUDE_TOP_FILE: &[&str] = &["translocator.json"];
 
 #[derive(Serialize)]
 pub struct BackupInfo {
     pub id: String,
+    /// "mods" (fast Mods-only snapshot) or "full" (whole compressed install).
+    pub kind: String,
     pub mod_count: usize,
+    /// Bytes on disk.
+    pub size: u64,
     pub created: String,
 }
 
@@ -122,39 +131,128 @@ pub fn backup_mods(install_dir: &Path) -> Result<String, String> {
     Ok(id)
 }
 
-/// All backups for an install, newest-first. Each entry reports how many zips it
-/// holds and a readable creation time derived from the id.
+/// Snapshot the ENTIRE installation (worlds, config, mods, playerdata, ...) into
+/// a single compressed `<id>.zip`, excluding transient/large dirs (Cache, Logs)
+/// and our own metadata. `compression` is the deflate level 0-9. Prunes full
+/// backups past `keep`. Returns the id.
+pub fn backup_install(install_dir: &Path, compression: u8, keep: usize) -> Result<String, String> {
+    let id = new_id();
+    let root = backups_root(install_dir);
+    std::fs::create_dir_all(&root).map_err(|e| format!("create backup dir failed: {e}"))?;
+    let zip_path = root.join(format!("{id}.zip"));
+
+    let file = std::fs::File::create(&zip_path).map_err(|e| format!("create backup zip failed: {e}"))?;
+    let mut zw = zip::ZipWriter::new(file);
+    let opts = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated)
+        .compression_level(Some(compression.min(9) as i64));
+
+    if let Err(e) = zip_dir_recursive(&mut zw, install_dir, install_dir, opts) {
+        let _ = std::fs::remove_file(&zip_path);
+        return Err(e);
+    }
+    zw.finish().map_err(|e| {
+        let _ = std::fs::remove_file(&zip_path);
+        format!("finalize backup zip failed: {e}")
+    })?;
+
+    let _ = prune_full(install_dir, keep.max(1));
+    Ok(id)
+}
+
+fn zip_dir_recursive<W: std::io::Write + std::io::Seek>(
+    zw: &mut zip::ZipWriter<W>,
+    base: &Path,
+    dir: &Path,
+    opts: zip::write::SimpleFileOptions,
+) -> Result<(), String> {
+    let rd = match std::fs::read_dir(dir) {
+        Ok(r) => r,
+        Err(_) => return Ok(()),
+    };
+    let is_top = dir == base;
+    for e in rd.flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        if is_top && (EXCLUDE_TOP.contains(&name.as_str()) || EXCLUDE_TOP_FILE.contains(&name.as_str())) {
+            continue;
+        }
+        let path = e.path();
+        let ft = match e.file_type() {
+            Ok(t) => t,
+            Err(_) => continue,
+        };
+        if ft.is_dir() {
+            zip_dir_recursive(zw, base, &path, opts)?;
+        } else if ft.is_file() {
+            let rel = path.strip_prefix(base).map_err(|e| e.to_string())?;
+            let rel_str = rel.to_string_lossy().replace('\\', "/");
+            zw.start_file(rel_str, opts).map_err(|e| format!("zip entry failed: {e}"))?;
+            let mut f = std::fs::File::open(&path).map_err(|e| e.to_string())?;
+            std::io::copy(&mut f, zw).map_err(|e| format!("zip write failed: {e}"))?;
+        }
+    }
+    Ok(())
+}
+
+fn count_zips_in_dir(dir: &Path) -> usize {
+    std::fs::read_dir(dir)
+        .map(|r| {
+            r.flatten()
+                .filter(|f| f.path().extension().map(|x| x.eq_ignore_ascii_case("zip")).unwrap_or(false))
+                .count()
+        })
+        .unwrap_or(0)
+}
+
+fn dir_size(dir: &Path) -> u64 {
+    let mut total = 0;
+    if let Ok(rd) = std::fs::read_dir(dir) {
+        for e in rd.flatten() {
+            if let Ok(m) = e.metadata() {
+                total += if m.is_dir() { dir_size(&e.path()) } else { m.len() };
+            }
+        }
+    }
+    total
+}
+
+/// All backups for an install, newest-first — both fast Mods-only snapshots
+/// (`<id>/` dirs) and whole-install compressed snapshots (`<id>.zip`).
 pub fn list_backups(install_dir: &Path) -> Vec<BackupInfo> {
     let root = backups_root(install_dir);
     let mut out = Vec::new();
     if let Ok(rd) = std::fs::read_dir(&root) {
         for e in rd.flatten() {
-            if !e.file_type().map(|t| t.is_dir()).unwrap_or(false) {
-                continue;
+            let ft = match e.file_type() {
+                Ok(t) => t,
+                Err(_) => continue,
+            };
+            let fname = e.file_name().to_string_lossy().into_owned();
+            if ft.is_dir() {
+                if !is_safe_id(&fname) {
+                    continue;
+                }
+                let created = created_at(&e.path()).map(created_from_id_millis).unwrap_or_else(|| fname.clone());
+                out.push(BackupInfo {
+                    kind: "mods".into(),
+                    mod_count: count_zips_in_dir(&e.path()),
+                    size: dir_size(&e.path()),
+                    created,
+                    id: fname,
+                });
+            } else if ft.is_file() {
+                if let Some(stem) = fname.strip_suffix(".zip") {
+                    if !is_safe_id(stem) {
+                        continue;
+                    }
+                    let size = std::fs::metadata(e.path()).map(|m| m.len()).unwrap_or(0);
+                    let created = created_at(&e.path()).map(created_from_id_millis).unwrap_or_else(|| stem.to_string());
+                    out.push(BackupInfo { id: stem.to_string(), kind: "full".into(), mod_count: 0, size, created });
+                }
             }
-            let id = e.file_name().to_string_lossy().into_owned();
-            if !is_safe_id(&id) {
-                continue;
-            }
-            let mod_count = std::fs::read_dir(e.path())
-                .map(|r| {
-                    r.flatten()
-                        .filter(|f| {
-                            f.path()
-                                .extension()
-                                .map(|x| x.eq_ignore_ascii_case("zip"))
-                                .unwrap_or(false)
-                        })
-                        .count()
-                })
-                .unwrap_or(0);
-            let created = created_at(&e.path())
-                .map(created_from_id_millis)
-                .unwrap_or_else(|| id.clone());
-            out.push(BackupInfo { id, mod_count, created });
         }
     }
-    // Ids are lexically sortable; newest-first.
+    // Ids are lexically sortable; newest-first (kinds interleave by time).
     out.sort_by(|a, b| b.id.cmp(&a.id));
     out
 }
@@ -172,6 +270,11 @@ fn created_at(dir: &Path) -> Option<u128> {
 pub fn restore_backup(install_dir: &Path, id: &str) -> Result<(), String> {
     if !is_safe_id(id) {
         return Err(format!("invalid backup id: {id}"));
+    }
+    // A full (whole-install) backup is a `<id>.zip`; extract it over the install.
+    let zip_path = backups_root(install_dir).join(format!("{id}.zip"));
+    if zip_path.is_file() {
+        return restore_full(install_dir, &zip_path);
     }
     let src_dir = backups_root(install_dir).join(id);
     if !src_dir.is_dir() {
@@ -203,6 +306,53 @@ pub fn restore_backup(install_dir: &Path, id: &str) -> Result<(), String> {
                 }
             }
         }
+    }
+    Ok(())
+}
+
+/// Extract a whole-install `<id>.zip` over the installation folder (path-traversal
+/// safe via `enclosed_name`). Overwrites files present in the snapshot; files
+/// added since the snapshot are left in place (a merge restore, so a mid-restore
+/// failure never empties the install).
+fn restore_full(install_dir: &Path, zip_path: &Path) -> Result<(), String> {
+    let file = std::fs::File::open(zip_path).map_err(|e| e.to_string())?;
+    let mut archive = zip::ZipArchive::new(file).map_err(|e| format!("open backup failed: {e}"))?;
+    for i in 0..archive.len() {
+        let mut entry = archive.by_index(i).map_err(|e| e.to_string())?;
+        let Some(rel) = entry.enclosed_name() else { continue };
+        let out = install_dir.join(rel);
+        if entry.is_dir() {
+            std::fs::create_dir_all(&out).map_err(|e| e.to_string())?;
+        } else {
+            if let Some(p) = out.parent() {
+                std::fs::create_dir_all(p).map_err(|e| e.to_string())?;
+            }
+            let mut of = std::fs::File::create(&out).map_err(|e| e.to_string())?;
+            std::io::copy(&mut entry, &mut of).map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
+}
+
+/// Delete the oldest full (`<id>.zip`) backups beyond `keep`.
+pub fn prune_full(install_dir: &Path, keep: usize) -> Result<(), String> {
+    let root = backups_root(install_dir);
+    let mut ids: Vec<String> = Vec::new();
+    if let Ok(rd) = std::fs::read_dir(&root) {
+        for e in rd.flatten() {
+            if e.file_type().map(|t| t.is_file()).unwrap_or(false) {
+                let n = e.file_name().to_string_lossy().into_owned();
+                if let Some(stem) = n.strip_suffix(".zip") {
+                    if is_safe_id(stem) {
+                        ids.push(stem.to_string());
+                    }
+                }
+            }
+        }
+    }
+    ids.sort_by(|a, b| b.cmp(a));
+    for id in ids.into_iter().skip(keep) {
+        let _ = std::fs::remove_file(root.join(format!("{id}.zip")));
     }
     Ok(())
 }

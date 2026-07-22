@@ -19,6 +19,10 @@ fn default_compression() -> u8 {
     6
 }
 
+fn default_backups_limit() -> u8 {
+    5
+}
+
 #[derive(Serialize, Deserialize, Clone)]
 pub struct InstallationMeta {
     pub name: String,
@@ -36,6 +40,8 @@ pub struct InstallationMeta {
     pub auto_backup: bool,
     #[serde(default = "default_compression")]
     pub compression: u8,
+    #[serde(default = "default_backups_limit")]
+    pub backups_limit: u8,
     #[serde(default)]
     pub icon: String,
     #[serde(default)]
@@ -57,6 +63,7 @@ impl Default for InstallationMeta {
             env_vars: String::new(),
             auto_backup: false,
             compression: 6,
+            backups_limit: 5,
             icon: String::new(),
             favorite: false,
             last_played: 0,

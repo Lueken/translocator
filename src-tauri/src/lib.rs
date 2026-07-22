@@ -225,9 +225,9 @@ async fn play(
         ));
     }
 
-    // 2. Optional backup before playing, then stamp the validated session.
+    // 2. Optional whole-install backup before playing, then stamp the session.
     if meta.auto_backup {
-        let _ = backup::backup_mods(&dir);
+        let _ = backup::backup_install(&dir, meta.compression, meta.backups_limit as usize);
     }
     session::stamp_session(&dir, &account)?;
 
@@ -331,10 +331,17 @@ fn list_mod_files(install_dir: String) -> Result<Vec<String>, String> {
 }
 
 /// Snapshot the install's Mods folder into a fresh timestamped backup; returns
-/// the backup id. Called before applying mod updates.
+/// the backup id. Called before applying mod updates (fast, mods-only).
 #[tauri::command]
 fn backup_mods(install_dir: String) -> Result<String, String> {
     backup::backup_mods(&PathBuf::from(install_dir))
+}
+
+/// Snapshot the WHOLE installation (worlds, config, mods) into a compressed
+/// backup at the given level, pruned to `keep`. Returns the backup id.
+#[tauri::command]
+fn backup_install(install_dir: String, compression: u8, keep: u8) -> Result<String, String> {
+    backup::backup_install(&PathBuf::from(install_dir), compression, keep as usize)
 }
 
 /// All backups for an install, newest-first.
@@ -377,6 +384,7 @@ pub fn run() {
             install_release,
             list_mod_files,
             backup_mods,
+            backup_install,
             list_backups,
             restore_backup
         ])
