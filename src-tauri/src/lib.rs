@@ -196,13 +196,14 @@ async fn mod_donations(modidstr: String) -> Result<Vec<String>, String> {
 }
 
 /// Installed mods with newer ModDB releases, each release carrying its
-/// compatibility (vs `game_version`) and changelog.
+/// compatibility (vs `game_version`) and changelog. Emits "check-progress".
 #[tauri::command]
 async fn check_updates(
+    app: AppHandle,
     install_dir: String,
     game_version: String,
 ) -> Result<Vec<updates::ModUpdate>, String> {
-    updates::check_updates(&PathBuf::from(install_dir), &game_version).await
+    updates::check_updates(&app, &PathBuf::from(install_dir), &game_version).await
 }
 
 /// Install a specific release version, replacing the currently installed zip.
@@ -260,6 +261,7 @@ fn restore_backup(install_dir: String, id: String) -> Result<(), String> {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_window_state::Builder::default().build())
         .invoke_handler(tauri::generate_handler![
             login,
             get_account,

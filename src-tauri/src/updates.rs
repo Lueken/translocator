@@ -12,6 +12,9 @@ use futures::stream::StreamExt;
 use serde::Serialize;
 use std::cmp::Ordering;
 use std::path::Path;
+use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+use std::sync::Arc;
+use tauri::Emitter;
 
 // How many mod-detail fetches to run at once.
 const CONCURRENCY: usize = 16;
@@ -104,16 +107,28 @@ fn compat_of(tags: &[String], game_version: &str) -> String {
 
 /// For every installed mod, find newer releases + their compatibility and
 /// changelog. Only mods with at least one newer release are returned.
-pub async fn check_updates(install_dir: &Path, game_version: &str) -> Result<Vec<ModUpdate>, String> {
+/// Emits "check-progress" { done, total } as each mod resolves.
+pub async fn check_updates(
+    app: &tauri::AppHandle,
+    install_dir: &Path,
+    game_version: &str,
+) -> Result<Vec<ModUpdate>, String> {
     let installed = deps::installed_mods(install_dir);
     let client = reqwest::Client::new();
     let game_version = game_version.to_string();
+    let total = installed.len();
+    let done = Arc::new(AtomicUsize::new(0));
 
     let futs = installed.into_iter().map(|(filename, info)| {
         let client = client.clone();
         let game_version = game_version.clone();
+        let app = app.clone();
+        let done = done.clone();
         async move {
-            let full = mods::fetch_full(&client, &info.modid).await.ok()?;
+            let full = mods::fetch_full(&client, &info.modid).await;
+            let d = done.fetch_add(1, AtomicOrdering::Relaxed) + 1;
+            let _ = app.emit("check-progress", serde_json::json!({ "done": d, "total": total }));
+            let full = full.ok()?;
             let newer: Vec<ReleaseInfo> = full
                 .releases
                 .iter()
