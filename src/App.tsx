@@ -223,6 +223,7 @@ function App() {
   const [createVersion, setCreateVersion] = useState("");
   const [cachedVersions, setCachedVersions] = useState<string[]>([]);
   const [seedSettings, setSeedSettings] = useState(() => localStorage.getItem("tl-seed-settings") !== "0");
+  const [backingUp, setBackingUp] = useState(false);
 
   const [view, setView] = useState<View>("updates");
   const [theme, setTheme] = useState<Theme>(() => (localStorage.getItem("tl-theme") as Theme) || "almanac");
@@ -613,6 +614,7 @@ function App() {
     if (!target) return;
     const m = installs.find((i) => i.path === target)?.meta;
     setBusy(true);
+    setBackingUp(true);
     try {
       say(`Backing up the whole installation (this can take a moment) ...`);
       const id = await invoke<string>("backup_install", { installDir: target, compression: m?.compression ?? 6, keep: m?.backups_limit ?? 5 });
@@ -624,6 +626,7 @@ function App() {
       toast(`Backup failed: ${e}`, undefined, false);
     } finally {
       setBusy(false);
+      setBackingUp(false);
     }
   }
   async function openModDB(assetid: number) {
@@ -959,6 +962,12 @@ function App() {
                         <button className="btn" disabled={busy || !target} onClick={backupNow} title="Fast snapshot of just the Mods folder">Back up mods</button>
                         <button className="btn" disabled={busy || !target} onClick={backupFull} title="Compressed snapshot of the whole install (worlds, config, mods)">Back up everything</button>
                       </div>
+                      {backingUp && (
+                        <div className="checking" style={{ padding: "4px 0 10px" }}>
+                          <div className="prog-n tab">Compressing the whole installation… (worlds can take a minute)</div>
+                          <div className="prog"><i className="indet" style={{ width: "40%" }} /></div>
+                        </div>
+                      )}
                       {backups.length === 0 ? (
                         <p className="muted">No backups yet. A Mods backup is taken automatically before "Update all compatible".</p>
                       ) : (

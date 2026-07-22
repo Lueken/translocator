@@ -225,9 +225,11 @@ async fn play(
         ));
     }
 
-    // 2. Optional whole-install backup before playing, then stamp the session.
+    // 2. Optional whole-install backup before playing (off the UI thread), then
+    //    stamp the validated session.
     if meta.auto_backup {
-        let _ = backup::backup_install(&dir, meta.compression, meta.backups_limit as usize);
+        let (d, comp, keep) = (dir.clone(), meta.compression, meta.backups_limit as usize);
+        let _ = tokio::task::spawn_blocking(move || backup::backup_install(&d, comp, keep)).await;
     }
     session::stamp_session(&dir, &account)?;
 
@@ -331,17 +333,25 @@ fn list_mod_files(install_dir: String) -> Result<Vec<String>, String> {
 }
 
 /// Snapshot the install's Mods folder into a fresh timestamped backup; returns
-/// the backup id. Called before applying mod updates (fast, mods-only).
+/// the backup id. Called before applying mod updates (fast, mods-only). Runs off
+/// the UI thread.
 #[tauri::command]
-fn backup_mods(install_dir: String) -> Result<String, String> {
-    backup::backup_mods(&PathBuf::from(install_dir))
+async fn backup_mods(install_dir: String) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || backup::backup_mods(&PathBuf::from(install_dir)))
+        .await
+        .map_err(|e| format!("backup task failed: {e}"))?
 }
 
 /// Snapshot the WHOLE installation (worlds, config, mods) into a compressed
-/// backup at the given level, pruned to `keep`. Returns the backup id.
+/// backup at the given level, pruned to `keep`. Heavy (gigabytes), so it runs on
+/// a blocking thread to keep the UI responsive. Returns the backup id.
 #[tauri::command]
-fn backup_install(install_dir: String, compression: u8, keep: u8) -> Result<String, String> {
-    backup::backup_install(&PathBuf::from(install_dir), compression, keep as usize)
+async fn backup_install(install_dir: String, compression: u8, keep: u8) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || {
+        backup::backup_install(&PathBuf::from(install_dir), compression, keep as usize)
+    })
+    .await
+    .map_err(|e| format!("backup task failed: {e}"))?
 }
 
 /// All backups for an install, newest-first.
@@ -350,10 +360,13 @@ fn list_backups(install_dir: String) -> Result<Vec<backup::BackupInfo>, String> 
     Ok(backup::list_backups(&PathBuf::from(install_dir)))
 }
 
-/// Restore a snapshot: replace the Mods folder's zips with the backup's.
+/// Restore a snapshot (Mods folder, or the whole install for a full backup).
+/// Runs off the UI thread since a full restore can be large.
 #[tauri::command]
-fn restore_backup(install_dir: String, id: String) -> Result<(), String> {
-    backup::restore_backup(&PathBuf::from(install_dir), &id)
+async fn restore_backup(install_dir: String, id: String) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || backup::restore_backup(&PathBuf::from(install_dir), &id))
+        .await
+        .map_err(|e| format!("restore task failed: {e}"))?
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]

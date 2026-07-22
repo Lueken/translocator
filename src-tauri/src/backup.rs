@@ -139,21 +139,28 @@ pub fn backup_install(install_dir: &Path, compression: u8, keep: usize) -> Resul
     let id = new_id();
     let root = backups_root(install_dir);
     std::fs::create_dir_all(&root).map_err(|e| format!("create backup dir failed: {e}"))?;
-    let zip_path = root.join(format!("{id}.zip"));
+    // Write to a `.part` and rename on success, so an interrupted backup never
+    // leaves a corrupt `<id>.zip` (list_backups only sees complete `.zip` files).
+    let tmp = root.join(format!("{id}.zip.part"));
+    let final_path = root.join(format!("{id}.zip"));
 
-    let file = std::fs::File::create(&zip_path).map_err(|e| format!("create backup zip failed: {e}"))?;
+    let file = std::fs::File::create(&tmp).map_err(|e| format!("create backup zip failed: {e}"))?;
     let mut zw = zip::ZipWriter::new(file);
     let opts = zip::write::SimpleFileOptions::default()
         .compression_method(zip::CompressionMethod::Deflated)
         .compression_level(Some(compression.min(9) as i64));
 
     if let Err(e) = zip_dir_recursive(&mut zw, install_dir, install_dir, opts) {
-        let _ = std::fs::remove_file(&zip_path);
+        let _ = std::fs::remove_file(&tmp);
         return Err(e);
     }
-    zw.finish().map_err(|e| {
-        let _ = std::fs::remove_file(&zip_path);
-        format!("finalize backup zip failed: {e}")
+    if let Err(e) = zw.finish() {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(format!("finalize backup zip failed: {e}"));
+    }
+    std::fs::rename(&tmp, &final_path).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        format!("place backup zip failed: {e}")
     })?;
 
     let _ = prune_full(install_dir, keep.max(1));
