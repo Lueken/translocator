@@ -151,6 +151,19 @@ pub async fn ensure_version(app: &AppHandle, version: &str, url: &str) -> Result
         return Ok(p.to_string_lossy().into_owned());
     }
 
+    // SAFETY: the VS Windows client is a registry-based SYSTEM installer. Running
+    // it detects your existing Vintage Story and can prompt to uninstall it — it
+    // is not safe for a multi-version cache. Disabled until reworked to EXTRACT
+    // the installer's files (no run, no registry, no risk). Existing installs
+    // still launch via the configured game path.
+    let _ = (app, url);
+    return Err(format!(
+        "Downloading game {version} is temporarily disabled while the installer \
+         is reworked to extract files safely (it was prompting to uninstall your \
+         existing Vintage Story). Your existing installs still play normally."
+    ));
+
+    #[allow(unreachable_code)]
     #[cfg(not(target_os = "windows"))]
     {
         let _ = (url, version);
