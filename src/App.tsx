@@ -46,6 +46,8 @@ type ModUpdate = {
   latest_compatible: string | null;
 };
 
+type BackupInfo = { id: string; mod_count: number; created: string };
+
 // VS Launcher's default folders on this machine (editable in the UI).
 const DEFAULT_INSTALLS = "C:\\Users\\31686\\AppData\\Roaming\\VSLInstallations";
 const DEFAULT_GAME_EXE =
@@ -90,6 +92,10 @@ function App() {
   // Updates
   const [updates, setUpdates] = useState<ModUpdate[]>([]);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
+
+  // Backups
+  const [showBackups, setShowBackups] = useState(false);
+  const [backups, setBackups] = useState<BackupInfo[]>([]);
 
   // Browse (demoted)
   const [showBrowse, setShowBrowse] = useState(false);
@@ -259,6 +265,13 @@ function App() {
     }
     setBusy(true);
     try {
+      try {
+        const id = await invoke<string>("backup_mods", { installDir: target });
+        say(`Backed up ${installed.length} mods before updating (id ${id}).`);
+        await refreshBackups(target);
+      } catch (e) {
+        say(`⚠ Backup failed (${e}) — continuing with update.`);
+      }
       say(`Updating ${targets.length} mod(s) to latest compatible ...`);
       for (const u of targets) {
         try {
@@ -275,6 +288,30 @@ function App() {
       }
       await refreshInstalled(target);
       await checkUpdates();
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function refreshBackups(installDir: string) {
+    try {
+      setBackups(await invoke<BackupInfo[]>("list_backups", { installDir }));
+    } catch {
+      setBackups([]);
+    }
+  }
+
+  async function doRestore(id: string) {
+    if (!target) return;
+    setBusy(true);
+    try {
+      say(`Restoring backup ${id} ...`);
+      await invoke("restore_backup", { installDir: target, id });
+      say(`✓ Restored Mods folder to backup ${id}.`);
+      await refreshInstalled(target);
+      await checkUpdates();
+    } catch (e) {
+      say(`Restore error: ${e}`);
     } finally {
       setBusy(false);
     }
@@ -519,6 +556,75 @@ function App() {
             ))}
           </ul>
         )}
+
+        {/* ---------- Backups ---------- */}
+        <div style={{ marginTop: 12, borderTop: "1px solid #eee", paddingTop: 10 }}>
+          <button
+            onClick={() => {
+              const next = !showBackups;
+              setShowBackups(next);
+              if (next && target) refreshBackups(target);
+            }}
+            style={{ background: "none", border: "none", padding: 0, cursor: "pointer", fontWeight: 600, fontSize: 13 }}
+          >
+            {showBackups ? "▾" : "▸"} Backups{backups.length ? ` (${backups.length})` : ""}
+          </button>
+          {showBackups && (
+            <>
+              <div style={{ margin: "6px 0" }}>
+                <button
+                  disabled={busy || !target}
+                  onClick={async () => {
+                    if (!target) return;
+                    setBusy(true);
+                    try {
+                      const id = await invoke<string>("backup_mods", { installDir: target });
+                      say(`Backed up ${installed.length} mods (id ${id}).`);
+                      await refreshBackups(target);
+                    } catch (e) {
+                      say(`Backup error: ${e}`);
+                    } finally {
+                      setBusy(false);
+                    }
+                  }}
+                >
+                  Back up now
+                </button>
+              </div>
+              {backups.length === 0 ? (
+                <p style={{ color: "#888", fontSize: 12, margin: "4px 0" }}>
+                  No backups yet — one is taken automatically before "Update all compatible".
+                </p>
+              ) : (
+                <ul style={{ listStyle: "none", padding: 0, margin: 0 }}>
+                  {backups.map((b) => (
+                    <li
+                      key={b.id}
+                      style={{
+                        display: "flex",
+                        justifyContent: "space-between",
+                        alignItems: "center",
+                        padding: "5px 0",
+                        borderBottom: "1px solid #eee",
+                        fontSize: 12,
+                      }}
+                    >
+                      <span>
+                        <b>{b.created}</b>{" "}
+                        <small style={{ color: "#888" }}>
+                          {b.mod_count} mod{b.mod_count === 1 ? "" : "s"} · {b.id}
+                        </small>
+                      </span>
+                      <button disabled={busy} onClick={() => doRestore(b.id)} title="Replace Mods folder with this snapshot">
+                        Restore
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </>
+          )}
+        </div>
       </section>
 
       {/* ---------- Browse & install: demoted ---------- */}

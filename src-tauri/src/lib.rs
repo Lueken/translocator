@@ -6,6 +6,7 @@
 //! step 4). Also: persisted account (survives restart) and ModDB mod install.
 
 mod auth;
+mod backup;
 mod deps;
 mod launch;
 mod models;
@@ -236,6 +237,25 @@ fn list_mod_files(install_dir: String) -> Result<Vec<String>, String> {
     Ok(mods::list_mod_files(&PathBuf::from(install_dir)))
 }
 
+/// Snapshot the install's Mods folder into a fresh timestamped backup; returns
+/// the backup id. Called before applying mod updates.
+#[tauri::command]
+fn backup_mods(install_dir: String) -> Result<String, String> {
+    backup::backup_mods(&PathBuf::from(install_dir))
+}
+
+/// All backups for an install, newest-first.
+#[tauri::command]
+fn list_backups(install_dir: String) -> Result<Vec<backup::BackupInfo>, String> {
+    Ok(backup::list_backups(&PathBuf::from(install_dir)))
+}
+
+/// Restore a snapshot: replace the Mods folder's zips with the backup's.
+#[tauri::command]
+fn restore_backup(install_dir: String, id: String) -> Result<(), String> {
+    backup::restore_backup(&PathBuf::from(install_dir), &id)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -253,7 +273,10 @@ pub fn run() {
             check_deps,
             check_updates,
             install_release,
-            list_mod_files
+            list_mod_files,
+            backup_mods,
+            list_backups,
+            restore_backup
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
