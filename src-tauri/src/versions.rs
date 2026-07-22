@@ -146,10 +146,26 @@ pub fn remove_cached(app: &AppHandle, version: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Hex MD5 of a file, streamed so a 570 MB installer never loads into memory.
+fn file_md5(path: &std::path::Path) -> Result<String, String> {
+    use md5::{Digest, Md5};
+    let mut file = std::fs::File::open(path).map_err(|e| e.to_string())?;
+    let mut hasher = Md5::new();
+    std::io::copy(&mut file, &mut hasher).map_err(|e| e.to_string())?;
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
 /// Ensure a version is installed in the cache and return its exe path. If it is
 /// already cached this returns instantly (the dedup win). Otherwise it streams
-/// the installer (emitting "version-progress") and runs it silently.
-pub async fn ensure_version(app: &AppHandle, version: &str, url: &str) -> Result<String, String> {
+/// the installer (emitting "version-progress"), verifies it against the
+/// manifest's MD5, and only then runs it silently. `expected_md5` may be empty
+/// if the manifest didn't provide one (then we skip the check and say so).
+pub async fn ensure_version(
+    app: &AppHandle,
+    version: &str,
+    url: &str,
+    expected_md5: &str,
+) -> Result<String, String> {
     if let Some(p) = exe_path(app, version) {
         return Ok(p.to_string_lossy().into_owned());
     }
@@ -161,7 +177,7 @@ pub async fn ensure_version(app: &AppHandle, version: &str, url: &str) -> Result
     // Vintage Story; the UI warns the user to click "No" beforehand.
     #[cfg(not(target_os = "windows"))]
     {
-        let _ = (url, version);
+        let _ = (url, version, expected_md5);
         return Err("Automatic version install is Windows-only for now.".into());
     }
 
@@ -205,6 +221,26 @@ pub async fn ensure_version(app: &AppHandle, version: &str, url: &str) -> Result
         }
         file.flush().map_err(|e| e.to_string())?;
         drop(file);
+
+        // Integrity gate: we are about to execute this binary silently, so verify
+        // it matches the MD5 the official manifest published. A mismatch means a
+        // corrupted or tampered download; refuse to run it and delete it. (MD5 is
+        // what the manifest ships; it defends against corruption and casual
+        // tampering, on top of the HTTPS transport.)
+        if expected_md5.trim().is_empty() {
+            let _ = app.emit(
+                "version-progress",
+                serde_json::json!({ "version": version, "phase": "verify-skipped", "received": 0, "total": 0 }),
+            );
+        } else {
+            let actual = file_md5(&tmp)?;
+            if !actual.eq_ignore_ascii_case(expected_md5.trim()) {
+                let _ = std::fs::remove_file(&tmp);
+                return Err(format!(
+                    "installer integrity check failed for {version}: expected MD5 {expected_md5}, got {actual}. The download was refused and deleted."
+                ));
+            }
+        }
 
         // Run the Inno-Setup installer silently into the cache folder.
         let _ = app.emit(

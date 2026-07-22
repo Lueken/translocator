@@ -19,7 +19,7 @@ mod updates;
 mod versions;
 mod worlds;
 
-use models::Account;
+use models::{Account, AccountView};
 use serde::Serialize;
 use std::path::PathBuf;
 use tauri::{AppHandle, Manager};
@@ -28,7 +28,7 @@ use tauri::{AppHandle, Manager};
 #[derive(Serialize)]
 #[serde(tag = "status", rename_all = "camelCase")]
 enum LoginOutcome {
-    Success { account: Account },
+    Success { account: AccountView },
     NeedsTotp { prelogintoken: String, reason: Option<String> },
     Failed { reason: String },
 }
@@ -56,7 +56,9 @@ async fn login(
             entitlements: r.entitlements,
         };
         store::save_account(&app, &account)?;
-        Ok(LoginOutcome::Success { account })
+        // Return only the non-sensitive view; the session key/signature stay in
+        // the backend and on disk, never reaching the webview.
+        Ok(LoginOutcome::Success { account: account.view() })
     } else if let Some(pt) = r.prelogintoken {
         Ok(LoginOutcome::NeedsTotp {
             prelogintoken: pt,
@@ -69,15 +71,21 @@ async fn login(
     }
 }
 
-/// The persisted account, if any (called on app startup to restore the session).
+/// The persisted account as a non-sensitive view, if any (called on app startup
+/// to restore the signed-in display state without exposing the session token).
 #[tauri::command]
-fn get_account(app: AppHandle) -> Option<Account> {
-    store::load_account(&app)
+fn get_account(app: AppHandle) -> Option<AccountView> {
+    store::load_account(&app).map(|a| a.view())
 }
 
-/// Open a URL in the user's default browser (e.g. a mod's ModDB page).
+/// Open a URL in the user's default browser (e.g. a mod's ModDB page). Only web
+/// URLs are allowed, so this can never be steered into launching a local file or
+/// a custom scheme handler.
 #[tauri::command]
 fn open_url(app: AppHandle, url: String) -> Result<(), String> {
+    if !(url.starts_with("https://") || url.starts_with("http://")) {
+        return Err("refused to open a non-web URL".into());
+    }
     use tauri_plugin_opener::OpenerExt;
     app.opener().open_url(url, None::<&str>).map_err(|e| e.to_string())
 }
@@ -165,8 +173,8 @@ fn list_cached_versions(app: AppHandle) -> Vec<String> {
 /// Ensure a version is in the cache (download + silent install if needed).
 /// Emits "version-progress". Returns the cached exe path.
 #[tauri::command]
-async fn ensure_version(app: AppHandle, version: String, url: String) -> Result<String, String> {
-    versions::ensure_version(&app, &version, &url).await
+async fn ensure_version(app: AppHandle, version: String, url: String, md5: String) -> Result<String, String> {
+    versions::ensure_version(&app, &version, &url, &md5).await
 }
 
 /// Remove a cached version's binaries.
@@ -181,24 +189,31 @@ fn remove_version(app: AppHandle, version: String) -> Result<(), String> {
 enum PlayResult {
     /// The stored session is dead server-side; the UI must re-login.
     NeedsRelogin { reason: String },
-    /// The game ran. If `rotated`, the game issued a new session on exit and
-    /// `account` is the refreshed copy the UI should persist.
+    /// The game ran. If `rotated`, the game issued a new session on exit; the
+    /// refreshed session was persisted server-side and `account` is its view.
     Played {
         exit_code: i32,
         rotated: bool,
-        account: Account,
+        account: AccountView,
     },
 }
 
 /// The crown jewel: validate -> stamp -> launch -> read-back. Launch params,
 /// env vars, and auto-backup come from the installation's own metadata.
+///
+/// The account is loaded from the backend store here, not passed in from the
+/// webview, so the session key/signature never make the round trip through the
+/// frontend just to launch.
 #[tauri::command]
 async fn play(
     app: AppHandle,
     game_exe: String,
     install_dir: String,
-    account: Account,
 ) -> Result<PlayResult, String> {
+    let account = match store::load_account(&app) {
+        Some(a) => a,
+        None => return Ok(PlayResult::NeedsRelogin { reason: "not signed in".into() }),
+    };
     // 1. Validate the stored session with the account server BEFORE trusting it.
     let v = auth::client_validate(&account.uid, &account.sessionkey).await?;
     if v.valid != 1 {
@@ -266,7 +281,7 @@ async fn play(
     Ok(PlayResult::Played {
         exit_code,
         rotated,
-        account: refreshed,
+        account: refreshed.view(),
     })
 }
 

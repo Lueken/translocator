@@ -6,13 +6,11 @@ import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import "./themes.css";
 
 // ---- Types mirroring the Rust command surface (src-tauri/src/lib.rs) ----
+// Non-sensitive view of the signed-in account. The session key/signature stay
+// in the Rust backend and never cross into the webview.
 type Account = {
-  uid: string;
   playername: string;
   email: string;
-  sessionkey: string;
-  sessionsignature: string;
-  mptoken?: string | null;
   entitlements?: unknown;
 };
 type LoginOutcome =
@@ -544,7 +542,7 @@ function App() {
     setVersionProgress({ version, phase: "download", pct: -1 });
     try {
       say(`Downloading + installing game ${version} (${av.filesize}) ...`);
-      await invoke("ensure_version", { version, url: av.url });
+      await invoke("ensure_version", { version, url: av.url, md5: av.md5 });
       say(`✓ Game ${version} is ready in the cache.`);
       toast(`Installed game ${version}`);
       await fetchVersions();
@@ -624,7 +622,7 @@ function App() {
     setBusy(true);
     try {
       say(`▶ ${inst.meta.name}: validate → stamp → launch ...`);
-      const res = await invoke<PlayResult>("play", { gameExe, installDir: inst.path, account });
+      const res = await invoke<PlayResult>("play", { gameExe, installDir: inst.path });
       if (res.status === "needsRelogin") {
         say(`✗ Session rejected by server (${res.reason}). Re-login needed.`);
         toast("Session expired. Sign in again on the Account screen.", undefined, false);
