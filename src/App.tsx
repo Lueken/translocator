@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 
 // ---- Types mirroring the Rust command surface (src-tauri/src/lib.rs) ----
@@ -23,6 +23,15 @@ type PlayResult =
   | { status: "needsRelogin"; reason: string }
   | { status: "played"; exit_code: number; rotated: boolean; account: Account };
 
+type ModSummary = {
+  modid: number;
+  modidstr: string;
+  name: string;
+  summary: string;
+  author: string;
+  downloads: number;
+};
+
 // VS Launcher's default folders on this machine (editable in the UI).
 const DEFAULT_INSTALLS = "C:\\Users\\31686\\AppData\\Roaming\\VSLInstallations";
 const DEFAULT_GAME_EXE =
@@ -42,8 +51,37 @@ function App() {
   const [busy, setBusy] = useState(false);
   const [log, setLog] = useState<string[]>([]);
 
+  // Mods panel
+  const [target, setTarget] = useState<string>("");
+  const [search, setSearch] = useState("");
+  const [results, setResults] = useState<ModSummary[]>([]);
+  const [installed, setInstalled] = useState<string[]>([]);
+
   const say = (line: string) =>
     setLog((l) => [`${new Date().toLocaleTimeString()}  ${line}`, ...l].slice(0, 200));
+
+  // Restore persisted account + load installs on startup.
+  useEffect(() => {
+    (async () => {
+      const acct = await invoke<Account | null>("get_account");
+      if (acct) {
+        setAccount(acct);
+        say(`Restored session for ${acct.playername}.`);
+      }
+      await refreshInstalls();
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Default the mod target to the first install once we have them.
+  useEffect(() => {
+    if (!target && installs.length) setTarget(installs[0].path);
+  }, [installs, target]);
+
+  useEffect(() => {
+    if (target) refreshInstalled(target);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [target]);
 
   async function doLogin() {
     setBusy(true);
@@ -59,7 +97,7 @@ function App() {
         setAccount(res.account);
         setPrelogintoken(null);
         setTotp("");
-        say(`Logged in as ${res.account.playername} (uid ${res.account.uid.slice(0, 6)}...).`);
+        say(`Logged in as ${res.account.playername} — saved (survives restart).`);
       } else if (res.status === "needsTotp") {
         setPrelogintoken(res.prelogintoken);
         say(`2FA required${res.reason ? `: ${res.reason}` : ""}. Enter your TOTP code.`);
@@ -73,6 +111,12 @@ function App() {
     }
   }
 
+  async function doLogout() {
+    await invoke("logout");
+    setAccount(null);
+    say("Logged out — cleared saved session.");
+  }
+
   async function refreshInstalls() {
     try {
       const list = await invoke<InstallInfo[]>("list_installs", { installationsDir });
@@ -80,6 +124,14 @@ function App() {
       say(`Found ${list.length} installation(s).`);
     } catch (e) {
       say(`Error listing installs: ${e}`);
+    }
+  }
+
+  async function refreshInstalled(installDir: string) {
+    try {
+      setInstalled(await invoke<string[]>("list_mod_files", { installDir }));
+    } catch {
+      setInstalled([]);
     }
   }
 
@@ -101,13 +153,44 @@ function App() {
         say(`■ ${inst.name} exited (code ${res.exit_code}).`);
         if (res.rotated) {
           setAccount(res.account);
-          say("↻ Game rotated the session — captured the new key (this is the fix).");
+          say("↻ Game rotated the session — captured + saved the new key (this is the fix).");
         } else {
           say("✓ Session unchanged and still valid — no logout loop.");
         }
       }
     } catch (e) {
       say(`Error launching: ${e}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function doSearch() {
+    setBusy(true);
+    try {
+      say(`Searching ModDB for "${search}" ...`);
+      setResults(await invoke<ModSummary[]>("search_mods", { text: search }));
+    } catch (e) {
+      say(`Search error: ${e}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function doInstall(m: ModSummary) {
+    if (!target) {
+      say("Pick a target installation first.");
+      return;
+    }
+    setBusy(true);
+    try {
+      const targetName = installs.find((i) => i.path === target)?.name ?? target;
+      say(`Installing "${m.name}" into ${targetName} ...`);
+      const fname = await invoke<string>("install_mod", { installDir: target, modidstr: m.modidstr });
+      say(`✓ Installed ${fname}.`);
+      await refreshInstalled(target);
+    } catch (e) {
+      say(`Install error: ${e}`);
     } finally {
       setBusy(false);
     }
@@ -125,7 +208,7 @@ function App() {
     <main style={{ maxWidth: 720, margin: "0 auto", padding: 24, fontFamily: "system-ui" }}>
       <h1 style={{ marginBottom: 4 }}>⚙ Translocator</h1>
       <p style={{ color: "#666", marginTop: 0 }}>
-        Prototype — reliable login carryover (validate → stamp → launch → read-back)
+        Prototype — reliable carryover + ModDB install
       </p>
 
       <section style={box}>
@@ -149,7 +232,7 @@ function App() {
         {account ? (
           <div style={{ marginTop: 8 }}>
             Logged in as <b>{account.playername}</b>{" "}
-            <button onClick={() => setAccount(null)}>Log out</button>
+            <button onClick={doLogout}>Log out</button>
           </div>
         ) : (
           <div style={{ marginTop: 8 }}>
@@ -214,6 +297,79 @@ function App() {
             ))}
           </ul>
         )}
+      </section>
+
+      <section style={box}>
+        <strong>Mods (ModDB)</strong>
+        <div style={{ marginTop: 8 }}>
+          <label>
+            Target installation{" "}
+            <select value={target} onChange={(e) => setTarget(e.target.value)}>
+              {installs.map((i) => (
+                <option key={i.path} value={i.path}>
+                  {i.name}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
+        <form
+          style={{ display: "flex", gap: 8, marginTop: 8 }}
+          onSubmit={(e) => {
+            e.preventDefault();
+            doSearch();
+          }}
+        >
+          <input
+            style={{ flex: 1, padding: 6 }}
+            placeholder="search mods..."
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+          />
+          <button type="submit" disabled={busy}>
+            Search
+          </button>
+        </form>
+
+        {results.length > 0 && (
+          <ul style={{ listStyle: "none", padding: 0, marginTop: 8, maxHeight: 220, overflow: "auto" }}>
+            {results.map((m) => (
+              <li
+                key={m.modid}
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                  padding: "6px 0",
+                  borderBottom: "1px solid #eee",
+                }}
+              >
+                <span style={{ flex: 1 }}>
+                  <b>{m.name}</b>{" "}
+                  <small style={{ color: "#888" }}>
+                    by {m.author} · {m.downloads.toLocaleString()} dl
+                  </small>
+                </span>
+                <button disabled={busy || !target} onClick={() => doInstall(m)}>
+                  Install
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+
+        <div style={{ marginTop: 12 }}>
+          <small style={{ color: "#666" }}>
+            Installed in target ({installed.length}):
+          </small>
+          {installed.length > 0 && (
+            <ul style={{ margin: "4px 0 0", paddingLeft: 18, fontSize: 12, color: "#444" }}>
+              {installed.map((f) => (
+                <li key={f}>{f}</li>
+              ))}
+            </ul>
+          )}
+        </div>
       </section>
 
       <section style={box}>

@@ -1,19 +1,21 @@
-//! Translocator — Tauri command surface for the crown-jewel carryover flow.
+//! Translocator — Tauri command surface.
 //!
-//! The whole point of the prototype: prove that we can log in once and launch
-//! any number of installations repeatedly WITHOUT being bounced to re-login,
-//! which is exactly where VS Launcher and StoryForge both fail. The trick is
+//! Crown jewel: log in once and launch any installation repeatedly WITHOUT
+//! being bounced to re-login (where VS Launcher and StoryForge both fail) via
 //! validate-before-stamp (`play` step 1) and read-back-after-exit (`play`
-//! step 4).
+//! step 4). Also: persisted account (survives restart) and ModDB mod install.
 
 mod auth;
 mod launch;
 mod models;
+mod mods;
 mod session;
+mod store;
 
 use models::Account;
 use serde::Serialize;
 use std::path::PathBuf;
+use tauri::AppHandle;
 
 /// Result of a login attempt, tagged for the frontend.
 #[derive(Serialize)]
@@ -24,9 +26,11 @@ enum LoginOutcome {
     Failed { reason: String },
 }
 
-/// POST /v2/gamelogin, mapped into a frontend-friendly outcome.
+/// POST /v2/gamelogin, mapped into a frontend-friendly outcome. On success the
+/// account is persisted so it survives an app restart.
 #[tauri::command]
 async fn login(
+    app: AppHandle,
     email: String,
     password: String,
     totp: Option<String>,
@@ -35,17 +39,17 @@ async fn login(
     let r = auth::game_login(&email, &password, totp.as_deref(), prelogintoken.as_deref()).await?;
 
     if r.valid == 1 {
-        Ok(LoginOutcome::Success {
-            account: Account {
-                uid: r.uid.unwrap_or_default(),
-                playername: r.playername.unwrap_or_default(),
-                email,
-                sessionkey: r.sessionkey.unwrap_or_default(),
-                sessionsignature: r.sessionsignature.unwrap_or_default(),
-                mptoken: r.mptoken,
-                entitlements: r.entitlements,
-            },
-        })
+        let account = Account {
+            uid: r.uid.unwrap_or_default(),
+            playername: r.playername.unwrap_or_default(),
+            email,
+            sessionkey: r.sessionkey.unwrap_or_default(),
+            sessionsignature: r.sessionsignature.unwrap_or_default(),
+            mptoken: r.mptoken,
+            entitlements: r.entitlements,
+        };
+        store::save_account(&app, &account)?;
+        Ok(LoginOutcome::Success { account })
     } else if let Some(pt) = r.prelogintoken {
         Ok(LoginOutcome::NeedsTotp {
             prelogintoken: pt,
@@ -56,6 +60,18 @@ async fn login(
             reason: r.reason.unwrap_or_else(|| "Login failed".into()),
         })
     }
+}
+
+/// The persisted account, if any (called on app startup to restore the session).
+#[tauri::command]
+fn get_account(app: AppHandle) -> Option<Account> {
+    store::load_account(&app)
+}
+
+/// Forget the persisted account.
+#[tauri::command]
+fn logout(app: AppHandle) -> Result<(), String> {
+    store::clear_account(&app)
 }
 
 #[derive(Serialize)]
@@ -105,6 +121,7 @@ enum PlayResult {
 /// The crown jewel: validate -> stamp -> launch -> read-back.
 #[tauri::command]
 async fn play(
+    app: AppHandle,
     game_exe: String,
     install_dir: String,
     account: Account,
@@ -125,8 +142,8 @@ async fn play(
     // 3. Launch and wait for the game to close.
     let exit_code = launch::launch_and_wait(&game_exe, &dir, start_params.as_deref()).await?;
 
-    // 4. Read back the session the game left behind. If it rotated, capture it
-    //    so we never re-stamp a stale key on the next launch.
+    // 4. Read back the session the game left behind. If it rotated, capture and
+    //    persist it so we never re-stamp a stale key on the next launch.
     let mut refreshed = account.clone();
     let mut rotated = false;
     if let Some((uid, key, sig, name)) = session::read_back_session(&dir) {
@@ -138,6 +155,7 @@ async fn play(
             if !name.is_empty() {
                 refreshed.playername = name;
             }
+            store::save_account(&app, &refreshed)?;
         }
     }
 
@@ -148,11 +166,38 @@ async fn play(
     })
 }
 
+/// Text-search ModDB (most-downloaded first).
+#[tauri::command]
+async fn search_mods(text: String) -> Result<Vec<mods::ModSummary>, String> {
+    mods::search(&text).await
+}
+
+/// Download a mod's latest release into the install's Mods folder.
+#[tauri::command]
+async fn install_mod(install_dir: String, modidstr: String) -> Result<String, String> {
+    mods::install_latest(&PathBuf::from(install_dir), &modidstr).await
+}
+
+/// Zip filenames currently in an install's Mods folder.
+#[tauri::command]
+fn list_mod_files(install_dir: String) -> Result<Vec<String>, String> {
+    Ok(mods::list_mod_files(&PathBuf::from(install_dir)))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![login, list_installs, play])
+        .invoke_handler(tauri::generate_handler![
+            login,
+            get_account,
+            logout,
+            list_installs,
+            play,
+            search_mods,
+            install_mod,
+            list_mod_files
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
