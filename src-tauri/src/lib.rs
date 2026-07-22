@@ -12,6 +12,7 @@ mod models;
 mod mods;
 mod session;
 mod store;
+mod updates;
 
 use models::Account;
 use serde::Serialize;
@@ -67,6 +68,13 @@ async fn login(
 #[tauri::command]
 fn get_account(app: AppHandle) -> Option<Account> {
     store::load_account(&app)
+}
+
+/// Open a URL in the user's default browser (e.g. a mod's ModDB page).
+#[tauri::command]
+fn open_url(app: AppHandle, url: String) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+    app.opener().open_url(url, None::<&str>).map_err(|e| e.to_string())
 }
 
 /// Forget the persisted account.
@@ -186,6 +194,33 @@ async fn mod_donations(modidstr: String) -> Result<Vec<String>, String> {
     mods::get_donations(&modidstr).await
 }
 
+/// Installed mods with newer ModDB releases, each release carrying its
+/// compatibility (vs `game_version`) and changelog.
+#[tauri::command]
+async fn check_updates(
+    install_dir: String,
+    game_version: String,
+) -> Result<Vec<updates::ModUpdate>, String> {
+    updates::check_updates(&PathBuf::from(install_dir), &game_version).await
+}
+
+/// Install a specific release version, replacing the currently installed zip.
+#[tauri::command]
+async fn install_release(
+    install_dir: String,
+    modidstr: String,
+    modversion: String,
+    old_filename: Option<String>,
+) -> Result<String, String> {
+    mods::install_release(
+        &PathBuf::from(install_dir),
+        &modidstr,
+        &modversion,
+        old_filename.as_deref(),
+    )
+    .await
+}
+
 /// Required dependencies of an installed mod zip that are missing from the
 /// install (parsed from modinfo.json; skips the base game).
 #[tauri::command]
@@ -209,12 +244,15 @@ pub fn run() {
             login,
             get_account,
             logout,
+            open_url,
             list_installs,
             play,
             search_mods,
             install_mod,
             mod_donations,
             check_deps,
+            check_updates,
+            install_release,
             list_mod_files
         ])
         .run(tauri::generate_context!())

@@ -1,16 +1,17 @@
-//! ModDB browsing + installing.
+//! ModDB browsing, detail, and installing.
 //!
-//! Search hits the official ModDB API (`mods.vintagestory.at/api/mods`); install
-//! resolves a mod's latest release and downloads its `mainfile` zip straight
-//! into the installation's `Mods/` folder — no re-hosting, exactly the
-//! license-safe model in the brief. Game-version compatibility filtering is a
-//! later concern; this prototype searches by text and installs the newest
-//! release.
+//! Search + install hit the official ModDB API (`mods.vintagestory.at/api`).
+//! Installing downloads a release's `mainfile` zip straight into the
+//! installation's `Mods/` folder — no re-hosting, the license-safe model in the
+//! brief. `fetch_full` is the shared detail fetch (releases with tags +
+//! changelogs) that the update view and donation lookup both build on.
 
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 const MODDB: &str = "https://mods.vintagestory.at/api";
+
+// ---------------------------------------------------------------- search
 
 #[derive(Deserialize)]
 struct ModsListResponse {
@@ -67,52 +68,93 @@ pub async fn search(text: &str) -> Result<Vec<ModSummary>, String> {
         .collect())
 }
 
+// ---------------------------------------------------------------- detail
+
 #[derive(Deserialize)]
-struct ModDetailResponse {
+struct FullModResponse {
     #[serde(rename = "mod")]
-    mod_detail: ModDetail,
+    mod_detail: FullModDetail,
 }
 
 #[derive(Deserialize)]
-struct ModDetail {
+struct FullModDetail {
     #[serde(default)]
-    releases: Vec<Release>,
+    name: String,
+    #[serde(default)]
+    assetid: u64,
     #[serde(default)]
     text: String,
     // Present once upstream exposes it (anegostudios/vsmoddb#143); harmless until then.
     #[serde(default)]
     donateurl: Option<String>,
+    #[serde(default)]
+    releases: Vec<FullRelease>,
 }
 
-#[derive(Deserialize)]
-struct Release {
-    mainfile: String,
+/// A ModDB release. `tags` are the compatible game versions; `changelog` is the
+/// per-release notes (which the existing launchers never surface).
+#[derive(Deserialize, Clone)]
+pub struct FullRelease {
+    pub mainfile: String,
     #[serde(default)]
-    filename: String,
+    pub filename: String,
     #[serde(default)]
-    modversion: String,
+    pub modversion: String,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    #[serde(default)]
+    pub changelog: String,
+    #[serde(default)]
+    pub created: String,
 }
 
-/// Resolve the mod's latest release and download it into `<install>/Mods/`.
-/// Returns the installed filename.
-pub async fn install_latest(install_dir: &Path, modidstr: &str) -> Result<String, String> {
-    let detail: ModDetailResponse = reqwest::Client::new()
+pub struct ModFull {
+    pub name: String,
+    pub assetid: u64,
+    pub text: String,
+    pub donateurl: Option<String>,
+    pub releases: Vec<FullRelease>,
+}
+
+/// Fetch a mod's full detail (releases newest-first). Shared by install, the
+/// update view, and donation lookup.
+pub async fn fetch_full(client: &reqwest::Client, modidstr: &str) -> Result<ModFull, String> {
+    let r: FullModResponse = client
         .get(format!("{MODDB}/mod/{modidstr}"))
         .send()
         .await
         .map_err(|e| format!("mod detail failed: {e}"))?
         .json()
         .await
-        .map_err(|e| format!("mod detail parse: {e}"))?;
+        .map_err(|e| format!("mod detail parse ({modidstr}): {e}"))?;
+    let d = r.mod_detail;
+    Ok(ModFull {
+        name: d.name,
+        assetid: d.assetid,
+        text: d.text,
+        donateurl: d.donateurl,
+        releases: d.releases,
+    })
+}
 
-    // ModDB returns releases newest-first.
-    let rel = detail
-        .mod_detail
-        .releases
-        .first()
-        .ok_or("mod has no releases")?;
+// ---------------------------------------------------------------- install
 
-    let bytes = reqwest::Client::new()
+async fn download_release(
+    client: &reqwest::Client,
+    install_dir: &Path,
+    modidstr: &str,
+    rel: &FullRelease,
+    old_filename: Option<&str>,
+) -> Result<String, String> {
+    let mods_dir = install_dir.join("Mods");
+    std::fs::create_dir_all(&mods_dir).map_err(|e| e.to_string())?;
+    if let Some(old) = old_filename {
+        let p = mods_dir.join(old);
+        if p.exists() {
+            let _ = std::fs::remove_file(p);
+        }
+    }
+    let bytes = client
         .get(&rel.mainfile)
         .send()
         .await
@@ -120,9 +162,6 @@ pub async fn install_latest(install_dir: &Path, modidstr: &str) -> Result<String
         .bytes()
         .await
         .map_err(|e| format!("download read failed: {e}"))?;
-
-    let mods_dir = install_dir.join("Mods");
-    std::fs::create_dir_all(&mods_dir).map_err(|e| e.to_string())?;
     let fname = if rel.filename.is_empty() {
         format!("{modidstr}-{}.zip", rel.modversion)
     } else {
@@ -132,23 +171,42 @@ pub async fn install_latest(install_dir: &Path, modidstr: &str) -> Result<String
     Ok(fname)
 }
 
+/// Install a mod's latest release (used by dependency resolution).
+pub async fn install_latest(install_dir: &Path, modidstr: &str) -> Result<String, String> {
+    let client = reqwest::Client::new();
+    let full = fetch_full(&client, modidstr).await?;
+    let rel = full.releases.first().ok_or("mod has no releases")?;
+    download_release(&client, install_dir, modidstr, rel, None).await
+}
+
+/// Install a specific release version, replacing `old_filename` if given.
+pub async fn install_release(
+    install_dir: &Path,
+    modidstr: &str,
+    modversion: &str,
+    old_filename: Option<&str>,
+) -> Result<String, String> {
+    let client = reqwest::Client::new();
+    let full = fetch_full(&client, modidstr).await?;
+    let rel = full
+        .releases
+        .iter()
+        .find(|r| r.modversion == modversion)
+        .ok_or_else(|| format!("release {modversion} not found for {modidstr}"))?
+        .clone();
+    download_release(&client, install_dir, modidstr, &rel, old_filename).await
+}
+
+// ---------------------------------------------------------------- donations
+
 /// Donation links for a mod: the API's `donateurl` field if present (once
-/// upstream exposes it), otherwise donation URLs parsed from the mod's HTML
-/// description. Reference-only — surfaces the author's own link, re-hosts nothing.
+/// upstream exposes it), otherwise donation URLs parsed from the description.
 pub async fn get_donations(modidstr: &str) -> Result<Vec<String>, String> {
-    let detail: ModDetailResponse = reqwest::Client::new()
-        .get(format!("{MODDB}/mod/{modidstr}"))
-        .send()
-        .await
-        .map_err(|e| format!("mod detail failed: {e}"))?
-        .json()
-        .await
-        .map_err(|e| format!("mod detail parse: {e}"))?;
-    let m = detail.mod_detail;
-    if let Some(url) = m.donateurl.filter(|s| !s.trim().is_empty()) {
+    let full = fetch_full(&reqwest::Client::new(), modidstr).await?;
+    if let Some(url) = full.donateurl.filter(|s| !s.trim().is_empty()) {
         return Ok(vec![url]);
     }
-    Ok(extract_donation_links(&m.text))
+    Ok(extract_donation_links(&full.text))
 }
 
 /// Extract donation URLs (Patreon, Ko-fi, PayPal, etc.) from an HTML blob.
@@ -180,6 +238,8 @@ fn extract_donation_links(html: &str) -> Vec<String> {
     }
     out
 }
+
+// ---------------------------------------------------------------- installed files
 
 /// Zip filenames currently in the installation's Mods folder.
 pub fn list_mod_files(install_dir: &Path) -> Vec<String> {

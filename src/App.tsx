@@ -34,14 +34,46 @@ type ModSummary = {
 
 type MissingDep = { modid: string; version: string };
 
+type Compat = "exact" | "minor" | "unlikely";
+type ReleaseInfo = { modversion: string; compat: Compat; changelog: string; created: string };
+type ModUpdate = {
+  modid: string;
+  name: string;
+  assetid: number;
+  installed_version: string;
+  installed_filename: string;
+  newer: ReleaseInfo[];
+  latest_compatible: string | null;
+};
+
 // VS Launcher's default folders on this machine (editable in the UI).
 const DEFAULT_INSTALLS = "C:\\Users\\31686\\AppData\\Roaming\\VSLInstallations";
 const DEFAULT_GAME_EXE =
   "C:\\Users\\31686\\AppData\\Roaming\\VSLGameVersions\\1.22.3\\Vintagestory.exe";
 
+const COMPAT_COLOR: Record<Compat, string> = { exact: "#2a7", minor: "#e0a000", unlikely: "#c33" };
+const COMPAT_LABEL: Record<Compat, string> = {
+  exact: "author-tagged for your version",
+  minor: "same 1.x line — should work",
+  unlikely: "no matching version tag — probably incompatible",
+};
+
+const stripHtml = (s: string) =>
+  s
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/(p|li|div)>/gi, "\n")
+    .replace(/<[^>]*>/g, "")
+    .replace(/&nbsp;/g, " ")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+
 function App() {
   const [gameExe, setGameExe] = useState(DEFAULT_GAME_EXE);
   const [installationsDir, setInstallationsDir] = useState(DEFAULT_INSTALLS);
+  const [gameVersion, setGameVersion] = useState("1.22.3");
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -53,8 +85,14 @@ function App() {
   const [busy, setBusy] = useState(false);
   const [log, setLog] = useState<string[]>([]);
 
-  // Mods panel
   const [target, setTarget] = useState<string>("");
+
+  // Updates
+  const [updates, setUpdates] = useState<ModUpdate[]>([]);
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+
+  // Browse (demoted)
+  const [showBrowse, setShowBrowse] = useState(false);
   const [search, setSearch] = useState("");
   const [results, setResults] = useState<ModSummary[]>([]);
   const [installed, setInstalled] = useState<string[]>([]);
@@ -62,7 +100,6 @@ function App() {
   const say = (line: string) =>
     setLog((l) => [`${new Date().toLocaleTimeString()}  ${line}`, ...l].slice(0, 200));
 
-  // Restore persisted account + load installs on startup.
   useEffect(() => {
     (async () => {
       const acct = await invoke<Account | null>("get_account");
@@ -75,7 +112,6 @@ function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Default the mod target to the first install once we have them.
   useEffect(() => {
     if (!target && installs.length) setTarget(installs[0].path);
   }, [installs, target]);
@@ -84,6 +120,14 @@ function App() {
     if (target) refreshInstalled(target);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [target]);
+
+  const toggle = (modid: string) =>
+    setExpanded((s) => {
+      const n = new Set(s);
+      if (n.has(modid)) n.delete(modid);
+      else n.add(modid);
+      return n;
+    });
 
   async function doLogin() {
     setBusy(true);
@@ -167,6 +211,84 @@ function App() {
     }
   }
 
+  // ---- Updates ----
+  async function checkUpdates() {
+    if (!target) {
+      say("Pick a target installation first.");
+      return;
+    }
+    setBusy(true);
+    try {
+      const name = installs.find((i) => i.path === target)?.name ?? target;
+      say(`Checking updates for ${name} (game ${gameVersion}) ...`);
+      const ups = await invoke<ModUpdate[]>("check_updates", { installDir: target, gameVersion });
+      setUpdates(ups);
+      say(`${ups.length} mod(s) have newer releases.`);
+    } catch (e) {
+      say(`Update check error: ${e}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function installVersion(u: ModUpdate, modversion: string) {
+    setBusy(true);
+    try {
+      say(`Updating ${u.name} → ${modversion} ...`);
+      await invoke<string>("install_release", {
+        installDir: target,
+        modidstr: u.modid,
+        modversion,
+        oldFilename: u.installed_filename,
+      });
+      say(`✓ ${u.name} now at ${modversion}.`);
+      setUpdates((prev) => prev.filter((x) => x.modid !== u.modid)); // optimistic
+      await refreshInstalled(target);
+    } catch (e) {
+      say(`Update error: ${e}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function updateAllLatest() {
+    const targets = updates.filter((u) => u.latest_compatible);
+    if (!targets.length) {
+      say("No compatible updates to apply.");
+      return;
+    }
+    setBusy(true);
+    try {
+      say(`Updating ${targets.length} mod(s) to latest compatible ...`);
+      for (const u of targets) {
+        try {
+          await invoke<string>("install_release", {
+            installDir: target,
+            modidstr: u.modid,
+            modversion: u.latest_compatible,
+            oldFilename: u.installed_filename,
+          });
+          say(`  ✓ ${u.name} → ${u.latest_compatible}`);
+        } catch (e) {
+          say(`  ✗ ${u.name}: ${e}`);
+        }
+      }
+      await refreshInstalled(target);
+      await checkUpdates();
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function openModDB(assetid: number) {
+    try {
+      await invoke("open_url", { url: `https://mods.vintagestory.at/show/mod/${assetid}` });
+    } catch (e) {
+      say(`Open error: ${e}`);
+    }
+  }
+
+  // ---- Browse (demoted) ----
   async function doSearch() {
     setBusy(true);
     try {
@@ -186,8 +308,8 @@ function App() {
     }
     setBusy(true);
     try {
-      const targetName = installs.find((i) => i.path === target)?.name ?? target;
-      say(`Installing "${m.name}" into ${targetName} ...`);
+      const name = installs.find((i) => i.path === target)?.name ?? target;
+      say(`Installing "${m.name}" into ${name} ...`);
       const fname = await invoke<string>("install_mod", { installDir: target, modidstr: m.modidstr });
       say(`✓ Installed ${fname}.`);
       await resolveDeps(target, fname, new Set([m.modidstr.toLowerCase()]));
@@ -199,7 +321,6 @@ function App() {
     }
   }
 
-  // Install missing required deps transitively (self-reliant, from modinfo.json).
   async function resolveDeps(installDir: string, filename: string, seen: Set<string>) {
     const missing = await invoke<MissingDep[]>("check_deps", { installDir, filename });
     for (const dep of missing) {
@@ -209,7 +330,7 @@ function App() {
       try {
         const f = await invoke<string>("install_mod", { installDir, modidstr: dep.modid });
         say(`  ✓ installed dependency ${f}`);
-        await resolveDeps(installDir, f, seen); // transitive
+        await resolveDeps(installDir, f, seen);
       } catch (e) {
         say(`  ✗ dependency ${dep.modid} not installable: ${e}`);
       }
@@ -226,20 +347,13 @@ function App() {
     }
   }
 
-  const box: React.CSSProperties = {
-    border: "1px solid #ccc",
-    borderRadius: 8,
-    padding: 16,
-    marginBottom: 16,
-  };
+  const box: React.CSSProperties = { border: "1px solid #ccc", borderRadius: 8, padding: 16, marginBottom: 16 };
   const input: React.CSSProperties = { width: "100%", padding: 6, marginTop: 4 };
 
   return (
-    <main style={{ maxWidth: 720, margin: "0 auto", padding: 24, fontFamily: "system-ui" }}>
+    <main style={{ maxWidth: 760, margin: "0 auto", padding: 24, fontFamily: "system-ui" }}>
       <h1 style={{ marginBottom: 4 }}>⚙ Translocator</h1>
-      <p style={{ color: "#666", marginTop: 0 }}>
-        Prototype — reliable carryover + ModDB install
-      </p>
+      <p style={{ color: "#666", marginTop: 0 }}>Prototype — reliable carryover + mod update manager</p>
 
       <section style={box}>
         <strong>Paths</strong>
@@ -249,11 +363,7 @@ function App() {
         </label>
         <label style={{ display: "block", marginTop: 8 }}>
           Installations folder
-          <input
-            style={input}
-            value={installationsDir}
-            onChange={(e) => setInstallationsDir(e.target.value)}
-          />
+          <input style={input} value={installationsDir} onChange={(e) => setInstallationsDir(e.target.value)} />
         </label>
       </section>
 
@@ -261,17 +371,11 @@ function App() {
         <strong>Account</strong>
         {account ? (
           <div style={{ marginTop: 8 }}>
-            Logged in as <b>{account.playername}</b>{" "}
-            <button onClick={doLogout}>Log out</button>
+            Logged in as <b>{account.playername}</b> <button onClick={doLogout}>Log out</button>
           </div>
         ) : (
           <div style={{ marginTop: 8 }}>
-            <input
-              style={input}
-              placeholder="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-            />
+            <input style={input} placeholder="email" value={email} onChange={(e) => setEmail(e.target.value)} />
             <input
               style={input}
               type="password"
@@ -280,12 +384,7 @@ function App() {
               onChange={(e) => setPassword(e.target.value)}
             />
             {prelogintoken && (
-              <input
-                style={input}
-                placeholder="2FA / TOTP code"
-                value={totp}
-                onChange={(e) => setTotp(e.target.value)}
-              />
+              <input style={input} placeholder="2FA / TOTP code" value={totp} onChange={(e) => setTotp(e.target.value)} />
             )}
             <button style={{ marginTop: 8 }} disabled={busy} onClick={doLogin}>
               {prelogintoken ? "Submit 2FA code" : "Log in"}
@@ -329,82 +428,169 @@ function App() {
         )}
       </section>
 
+      {/* ---------- Mod updates: the star ---------- */}
       <section style={box}>
-        <strong>Mods (ModDB)</strong>
-        <div style={{ marginTop: 8 }}>
-          <label>
-            Target installation{" "}
-            <select value={target} onChange={(e) => setTarget(e.target.value)}>
-              {installs.map((i) => (
-                <option key={i.path} value={i.path}>
-                  {i.name}
-                </option>
-              ))}
-            </select>
+        <strong>Mod updates</strong>
+        <div style={{ display: "flex", gap: 8, alignItems: "center", margin: "8px 0", flexWrap: "wrap" }}>
+          <select value={target} onChange={(e) => setTarget(e.target.value)}>
+            {installs.map((i) => (
+              <option key={i.path} value={i.path}>
+                {i.name}
+              </option>
+            ))}
+          </select>
+          <label style={{ fontSize: 13 }}>
+            Game{" "}
+            <input style={{ width: 72, padding: 4 }} value={gameVersion} onChange={(e) => setGameVersion(e.target.value)} />
           </label>
-        </div>
-        <form
-          style={{ display: "flex", gap: 8, marginTop: 8 }}
-          onSubmit={(e) => {
-            e.preventDefault();
-            doSearch();
-          }}
-        >
-          <input
-            style={{ flex: 1, padding: 6 }}
-            placeholder="search mods..."
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-          />
-          <button type="submit" disabled={busy}>
-            Search
+          <button disabled={busy || !target} onClick={checkUpdates}>
+            Check for updates
           </button>
-        </form>
+          {updates.length > 0 && (
+            <button disabled={busy} onClick={updateAllLatest}>
+              Update all compatible
+            </button>
+          )}
+        </div>
 
-        {results.length > 0 && (
-          <ul style={{ listStyle: "none", padding: 0, marginTop: 8, maxHeight: 220, overflow: "auto" }}>
-            {results.map((m) => (
-              <li
-                key={m.modid}
-                style={{
-                  display: "flex",
-                  justifyContent: "space-between",
-                  alignItems: "center",
-                  padding: "6px 0",
-                  borderBottom: "1px solid #eee",
-                }}
-              >
-                <span style={{ flex: 1 }}>
-                  <b>{m.name}</b>{" "}
-                  <small style={{ color: "#888" }}>
-                    by {m.author} · {m.downloads.toLocaleString()} dl
-                  </small>
-                </span>
-                <span style={{ display: "flex", gap: 6 }}>
-                  <button onClick={() => doTip(m)} title="Show author donation link">
-                    ♥
+        {updates.length === 0 ? (
+          <p style={{ color: "#888" }}>Pick an installation and check for updates.</p>
+        ) : (
+          <ul style={{ listStyle: "none", padding: 0 }}>
+            {updates.map((u) => (
+              <li key={u.modid} style={{ padding: "8px 0", borderBottom: "1px solid #eee" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <button onClick={() => toggle(u.modid)} style={{ width: 26 }} title="Show version notes">
+                    {expanded.has(u.modid) ? "▾" : "▸"}
                   </button>
-                  <button disabled={busy || !target} onClick={() => doInstall(m)}>
-                    Install
+                  <span style={{ flex: 1 }}>
+                    <b>{u.name}</b>{" "}
+                    <small style={{ color: "#888" }}>
+                      {u.installed_version} → {u.latest_compatible ?? `${u.newer[0].modversion} (incompatible)`}
+                    </small>
+                  </span>
+                  {u.latest_compatible ? (
+                    <span style={{ color: "#2a7", fontSize: 12 }} title="a compatible update exists">
+                      ● compatible
+                    </span>
+                  ) : (
+                    <span style={{ color: "#c33", fontSize: 12 }} title="only incompatible updates found">
+                      ● incompatible
+                    </span>
+                  )}
+                  <button onClick={() => openModDB(u.assetid)} title="Open on ModDB">
+                    ↗
                   </button>
-                </span>
+                </div>
+
+                {expanded.has(u.modid) && (
+                  <ul style={{ listStyle: "none", paddingLeft: 34, marginTop: 6 }}>
+                    {u.newer.map((r) => (
+                      <li key={r.modversion} style={{ padding: "6px 0", borderTop: "1px dashed #eee" }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                          <span style={{ color: COMPAT_COLOR[r.compat] }} title={COMPAT_LABEL[r.compat]}>
+                            ●
+                          </span>
+                          <b style={{ flex: 1 }}>{r.modversion}</b>
+                          <small style={{ color: "#999" }}>{r.created?.slice(0, 10)}</small>
+                          <button disabled={busy} onClick={() => installVersion(u, r.modversion)}>
+                            Install this
+                          </button>
+                        </div>
+                        {r.changelog && (
+                          <pre
+                            style={{
+                              whiteSpace: "pre-wrap",
+                              fontSize: 11,
+                              color: "#555",
+                              margin: "4px 0 0",
+                              maxHeight: 160,
+                              overflow: "auto",
+                            }}
+                          >
+                            {stripHtml(r.changelog) || "(no notes)"}
+                          </pre>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                )}
               </li>
             ))}
           </ul>
         )}
+      </section>
 
-        <div style={{ marginTop: 12 }}>
-          <small style={{ color: "#666" }}>
-            Installed in target ({installed.length}):
-          </small>
-          {installed.length > 0 && (
-            <ul style={{ margin: "4px 0 0", paddingLeft: 18, fontSize: 12, color: "#444" }}>
-              {installed.map((f) => (
-                <li key={f}>{f}</li>
-              ))}
-            </ul>
-          )}
-        </div>
+      {/* ---------- Browse & install: demoted ---------- */}
+      <section style={box}>
+        <button
+          onClick={() => setShowBrowse((v) => !v)}
+          style={{ background: "none", border: "none", padding: 0, cursor: "pointer", fontWeight: 600 }}
+        >
+          {showBrowse ? "▾" : "▸"} Browse &amp; install mods
+        </button>
+        {showBrowse && (
+          <>
+            <form
+              style={{ display: "flex", gap: 8, marginTop: 8 }}
+              onSubmit={(e) => {
+                e.preventDefault();
+                doSearch();
+              }}
+            >
+              <input
+                style={{ flex: 1, padding: 6 }}
+                placeholder="search mods..."
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+              />
+              <button type="submit" disabled={busy}>
+                Search
+              </button>
+            </form>
+            {results.length > 0 && (
+              <ul style={{ listStyle: "none", padding: 0, marginTop: 8, maxHeight: 220, overflow: "auto" }}>
+                {results.map((m) => (
+                  <li
+                    key={m.modid}
+                    style={{
+                      display: "flex",
+                      justifyContent: "space-between",
+                      alignItems: "center",
+                      padding: "6px 0",
+                      borderBottom: "1px solid #eee",
+                    }}
+                  >
+                    <span style={{ flex: 1 }}>
+                      <b>{m.name}</b>{" "}
+                      <small style={{ color: "#888" }}>
+                        by {m.author} · {m.downloads.toLocaleString()} dl
+                      </small>
+                    </span>
+                    <span style={{ display: "flex", gap: 6 }}>
+                      <button onClick={() => doTip(m)} title="Show author donation link">
+                        ♥
+                      </button>
+                      <button disabled={busy || !target} onClick={() => doInstall(m)}>
+                        Install
+                      </button>
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
+            <div style={{ marginTop: 12 }}>
+              <small style={{ color: "#666" }}>Installed in target ({installed.length}):</small>
+              {installed.length > 0 && (
+                <ul style={{ margin: "4px 0 0", paddingLeft: 18, fontSize: 12, color: "#444" }}>
+                  {installed.map((f) => (
+                    <li key={f}>{f}</li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          </>
+        )}
       </section>
 
       <section style={box}>
