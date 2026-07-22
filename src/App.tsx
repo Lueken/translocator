@@ -32,6 +32,8 @@ type ModSummary = {
   downloads: number;
 };
 
+type MissingDep = { modid: string; version: string };
+
 // VS Launcher's default folders on this machine (editable in the UI).
 const DEFAULT_INSTALLS = "C:\\Users\\31686\\AppData\\Roaming\\VSLInstallations";
 const DEFAULT_GAME_EXE =
@@ -188,11 +190,29 @@ function App() {
       say(`Installing "${m.name}" into ${targetName} ...`);
       const fname = await invoke<string>("install_mod", { installDir: target, modidstr: m.modidstr });
       say(`✓ Installed ${fname}.`);
+      await resolveDeps(target, fname, new Set([m.modidstr.toLowerCase()]));
       await refreshInstalled(target);
     } catch (e) {
       say(`Install error: ${e}`);
     } finally {
       setBusy(false);
+    }
+  }
+
+  // Install missing required deps transitively (self-reliant, from modinfo.json).
+  async function resolveDeps(installDir: string, filename: string, seen: Set<string>) {
+    const missing = await invoke<MissingDep[]>("check_deps", { installDir, filename });
+    for (const dep of missing) {
+      if (seen.has(dep.modid)) continue;
+      seen.add(dep.modid);
+      say(`  ↳ missing dependency ${dep.modid}${dep.version ? ` (${dep.version})` : ""} — installing...`);
+      try {
+        const f = await invoke<string>("install_mod", { installDir, modidstr: dep.modid });
+        say(`  ✓ installed dependency ${f}`);
+        await resolveDeps(installDir, f, seen); // transitive
+      } catch (e) {
+        say(`  ✗ dependency ${dep.modid} not installable: ${e}`);
+      }
     }
   }
 

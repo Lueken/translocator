@@ -6,6 +6,7 @@
 //! step 4). Also: persisted account (survives restart) and ModDB mod install.
 
 mod auth;
+mod deps;
 mod launch;
 mod models;
 mod mods;
@@ -185,6 +186,15 @@ async fn mod_donations(modidstr: String) -> Result<Vec<String>, String> {
     mods::get_donations(&modidstr).await
 }
 
+/// Required dependencies of an installed mod zip that are missing from the
+/// install (parsed from modinfo.json; skips the base game).
+#[tauri::command]
+fn check_deps(install_dir: String, filename: String) -> Result<Vec<deps::MissingDep>, String> {
+    let base = PathBuf::from(&install_dir);
+    let zip = base.join("Mods").join(&filename);
+    Ok(deps::check_missing_deps(&base, &zip))
+}
+
 /// Zip filenames currently in an install's Mods folder.
 #[tauri::command]
 fn list_mod_files(install_dir: String) -> Result<Vec<String>, String> {
@@ -204,6 +214,7 @@ pub fn run() {
             search_mods,
             install_mod,
             mod_donations,
+            check_deps,
             list_mod_files
         ])
         .run(tauri::generate_context!())
