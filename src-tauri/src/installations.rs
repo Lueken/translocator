@@ -3,7 +3,7 @@
 //! Each installation folder (its `--dataPath`) carries a `translocator.json`
 //! holding the metadata VS Launcher and StoryForge keep: display name, pinned
 //! game version, launch params, env vars, backup preferences, and playtime.
-//! Existing folders are ADOPTED in place on first read — we write our metadata
+//! Existing folders are ADOPTED in place on first read - we write our metadata
 //! file alongside the game's own files, so nothing is moved, lost, or
 //! duplicated. This is what turns Translocator from a reader of someone else's
 //! installations into the owner of its own.
@@ -32,7 +32,7 @@ pub struct InstallationMeta {
     pub version: String,
     #[serde(default)]
     pub start_params: String,
-    /// "K=V, K2=V2" — same freeform shape VS Launcher uses.
+    /// "K=V, K2=V2" - same freeform shape VS Launcher uses.
     #[serde(default)]
     pub env_vars: String,
     /// Take a backup before launching.
@@ -132,7 +132,7 @@ pub struct InstallationCard {
 /// A subfolder is treated as an installation only if it looks like a VS data
 /// folder. This keeps `list` from adopting (and writing metadata into) unrelated
 /// directories if the installations path is ever misconfigured.
-fn looks_like_install(dir: &Path) -> bool {
+pub(crate) fn looks_like_install(dir: &Path) -> bool {
     dir.join("Mods").is_dir()
         || dir.join("clientsettings.json").is_file()
         || dir.join("Saves").is_dir()

@@ -1,4 +1,4 @@
-//! Translocator — Tauri command surface.
+//! Translocator - Tauri command surface.
 //!
 //! Crown jewel: log in once and launch any installation repeatedly WITHOUT
 //! being bounced to re-login (where VS Launcher and StoryForge both fail) via
@@ -10,6 +10,7 @@ mod backup;
 mod deps;
 mod installations;
 mod launch;
+mod migrate;
 mod models;
 mod mods;
 mod session;
@@ -281,7 +282,7 @@ async fn install_mod(app: AppHandle, install_dir: String, modidstr: String) -> R
     mods::install_latest(&app, &PathBuf::from(install_dir), &modidstr).await
 }
 
-/// Author donation link(s) for a mod — the structured `donateurl` field if the
+/// Author donation link(s) for a mod - the structured `donateurl` field if the
 /// API exposes it, otherwise parsed from the description. Reference-only.
 #[tauri::command]
 async fn mod_donations(modidstr: String) -> Result<Vec<String>, String> {
@@ -372,10 +373,10 @@ async fn restore_backup(install_dir: String, id: String) -> Result<(), String> {
 
 /// First-run defaults, resolved from the OS rather than hardcoded, so a fresh
 /// install works on any machine (no baked-in username or VS Launcher paths):
-/// - `installations_dir`: `%APPDATA%\Translocator\Installations` — our own
+/// - `installations_dir`: `%APPDATA%\Translocator\Installations` - our own
 ///   folder, created if missing so listing and Create both work immediately.
 /// - `game_exe`: the base game the official Anego Studios installer drops at
-///   `%APPDATA%\Vintagestory\Vintagestory.exe`. This is only a fallback — for
+///   `%APPDATA%\Vintagestory\Vintagestory.exe`. This is only a fallback - for
 ///   installs pinned to a downloaded version, `play` uses our version cache.
 #[derive(Serialize)]
 struct SuggestedPaths {
@@ -402,6 +403,21 @@ fn suggested_paths(app: AppHandle) -> SuggestedPaths {
         installations_dir,
         game_exe,
     }
+}
+
+/// Installations folders belonging to other launchers (VS Launcher, StoryForge)
+/// found on this machine, so the user can point at one and adopt in place.
+#[tauri::command]
+fn detect_launchers(app: AppHandle) -> Vec<migrate::DetectedLauncher> {
+    migrate::detect(&app)
+}
+
+/// Seed translocator.json for un-adopted installs in `installations_dir` from the
+/// managing launcher's config (version, params, playtime, ...). Non-destructive;
+/// never touches game data or copies a session. Returns how many were enriched.
+#[tauri::command]
+fn import_from_launcher(app: AppHandle, installations_dir: String) -> migrate::ImportResult {
+    migrate::import_from_launcher(&app, &PathBuf::from(installations_dir))
 }
 
 /// Every world in an installation's `Saves` folder, with parsed metadata (seed,
@@ -466,7 +482,9 @@ pub fn run() {
             list_worlds,
             backup_world,
             delete_world,
-            suggested_paths
+            suggested_paths,
+            detect_launchers,
+            import_from_launcher
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

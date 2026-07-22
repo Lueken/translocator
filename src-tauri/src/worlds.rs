@@ -11,7 +11,7 @@
 //! multi-megabyte chunk/block blobs) is skipped by index math, never decoded, so
 //! listing a 150 MB world costs about as much as reading its 3 MB metadata blob.
 //! If a world can't be opened or decoded it still lists with its filesystem
-//! facts (name from the filename, size, modified time) — the browser never hides
+//! facts (name from the filename, size, modified time) - the browser never hides
 //! a save just because its metadata didn't parse.
 
 use rusqlite::{Connection, OpenFlags};
@@ -134,7 +134,7 @@ fn parse_savegame(b: &[u8]) -> SaveMeta {
             }
             5 => i += 4, // fixed32
             1 => i += 8, // fixed64
-            _ => break,  // group/unknown wire type — stop, keep what we have
+            _ => break,  // group/unknown wire type - stop, keep what we have
         }
     }
     m

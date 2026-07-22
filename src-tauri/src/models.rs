@@ -3,7 +3,7 @@
 //! An `Account` is one Vintage Story login. The pair (`sessionkey`,
 //! `sessionsignature`) is the identity the game RSA-verifies locally and the
 //! account server validates. VS rotates this pair on every fresh login, which
-//! is the whole reason the carryover in the existing launchers breaks — see
+//! is the whole reason the carryover in the existing launchers breaks - see
 //! the brief, section 4.
 
 use serde::{Deserialize, Serialize};

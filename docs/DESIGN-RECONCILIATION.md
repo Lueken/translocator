@@ -8,12 +8,12 @@ design mockups, and stop the CSS drift that comes from re-deriving rules by hand
 
 There are two artifacts describing the same UI:
 
-- **Mockups** (`docs/mockups/*.html`) — single-theme, hardcoded hex, the design
+- **Mockups** (`docs/mockups/*.html`) - single-theme, hardcoded hex, the design
   source of truth. `almanac-design-pass-2.html` is the most complete and current
   (updates view + all states/feedback/safety patterns). `workshop.html` and
   `terminal.html` are the other two themes; `almanac-base.html` is the earlier
   Almanac take.
-- **App stylesheet** (`src/themes.css`) — token-based, three themes swapped via
+- **App stylesheet** (`src/themes.css`) - token-based, three themes swapped via
   `:root[data-theme="..."]`, styling one React component tree (`src/App.tsx`).
 
 Every time a component was touched during the build, its rules were re-derived
@@ -28,7 +28,7 @@ should share the same numbers, so they cannot drift.
 source of truth for color.** For each mockup CSS rule:
 
 1. Confirm the app's corresponding rule matches **exactly** on every non-color
-   property — padding, margin, font-size, letter-spacing, border-radius,
+   property - padding, margin, font-size, letter-spacing, border-radius,
    gap, border-width, flex/grid structure, line-height.
 2. For each **color** in the mockup rule, map it to the token whose **Almanac**
    value equals that hex (see the token map below). If no token matches, the fix
@@ -36,7 +36,7 @@ source of truth for color.** For each mockup CSS rule:
    component. Never introduce a new hardcoded hex in `themes.css` component rules.
 3. If the mockup and app genuinely disagree on a non-color property, the mockup
    wins unless a later user instruction overrode it (those overrides are listed
-   in "Deliberate deviations" below — honor them).
+   in "Deliberate deviations" below - honor them).
 
 ## Token map (mockup hex -> Almanac token)
 
@@ -52,7 +52,7 @@ From `almanac-design-pass-2.html` `:root` vs `src/themes.css` `:root` (Almanac):
 | `--ink2 #5f5741` | `--fg-muted` | `#5f5741` |
 | `--ink3 #8f8467` | `--fg-faint` | `#8f8467` |
 | `--rule #cbb98f` | `--line` | `#cbb98f` |
-| `--rule2 #d8cba8` | `--line-soft` | `#d7c9a4` (**check: mockup d8cba8 vs token d7c9a4 — reconcile**) |
+| `--rule2 #d8cba8` | `--line-soft` | `#d7c9a4` (**check: mockup d8cba8 vs token d7c9a4 - reconcile**) |
 | `--copper #B26A22` | `--accent` | `#B26A22` |
 | `--copper2 #8a4f13` | `--accent-ink` | `#8a4f13` |
 | `--copper-fg #f4e9d2` | `--accent-fg` | `#f4e9d2` |
@@ -85,12 +85,12 @@ Diff each mockup rule against `src/themes.css`. Known-touched, verify all:
 - [ ] `.toast`/`.toast-msg`/`.undo`
 - [ ] scrollbars (accent thumb, per-theme radius)
 
-## Deliberate deviations (do NOT "fix" these — the owner asked for them)
+## Deliberate deviations (do NOT "fix" these - the owner asked for them)
 
 - **Toast:** no colored left border; `✓` prefix inline in text color on success
   toasts (`ok !== false`); Undo lightened via `color-mix(... var(--ok) 68% #fff)`
   so it reads on the dark pill. (Mockup had a hardcoded `#77b699`; the color-mix
-  is the theme-adaptive equivalent — keep it.)
+  is the theme-adaptive equivalent - keep it.)
 - **"Mods back up before update" caption:** centered under the Update-all button
   (`.ctacol{align-items:center}`), not right-aligned.
 - **Dropdown:** the app uses a native `<select>`; the mockup uses a custom `.sel`

@@ -65,6 +65,7 @@ type WorldInfo = {
   modified_ms: number;
   parsed: boolean;
 };
+type DetectedLauncher = { launcher: string; installations_dir: string; can_enrich: boolean; count: number };
 type Theme = "almanac" | "workshop" | "terminal";
 type View = "installations" | "updates" | "mods" | "worlds" | "account" | "settings";
 type Toast = { id: number; msg: string; undo?: () => void; ok?: boolean };
@@ -240,6 +241,8 @@ function App() {
   const [results, setResults] = useState<ModSummary[]>([]);
   const [installed, setInstalled] = useState<string[]>([]);
 
+  const [detected, setDetected] = useState<DetectedLauncher[]>([]);
+
   const [worlds, setWorlds] = useState<WorldInfo[]>([]);
   const [worldsBusy, setWorldsBusy] = useState(false);
   const [confirmDeleteWorld, setConfirmDeleteWorld] = useState<WorldInfo | null>(null);
@@ -254,7 +257,7 @@ function App() {
   const [seedSettings, setSeedSettings] = useState(() => localStorage.getItem("tl-seed-settings") !== "0");
   const [backingUp, setBackingUp] = useState(false);
 
-  const [view, setView] = useState<View>("updates");
+  const [view, setView] = useState<View>("installations");
   const [theme, setTheme] = useState<Theme>(() => (localStorage.getItem("tl-theme") as Theme) || "almanac");
   const [toasts, setToasts] = useState<Toast[]>([]);
   const toastId = useRef(0);
@@ -285,7 +288,7 @@ function App() {
         say(`Restored session for ${acct.playername}.`);
       }
       // Resolve first-run defaults for this machine (no hardcoded paths). Only
-      // fill blanks — a user's saved paths always win.
+      // fill blanks; a user's saved paths always win.
       let dir = installationsDir;
       let exe = gameExe;
       if (!dir || !exe) {
@@ -298,7 +301,17 @@ function App() {
           say(`Could not resolve default paths: ${e}`);
         }
       }
-      await refreshInstalls(dir);
+      const found = await refreshInstalls(dir);
+      // First run with nothing adopted yet: look for other launchers to import.
+      if (found === 0) {
+        try {
+          const dl = await invoke<DetectedLauncher[]>("detect_launchers");
+          setDetected(dl);
+          if (dl.length) say(`Detected ${dl.map((d) => `${d.count} from ${d.launcher}`).join(", ")}.`);
+        } catch (e) {
+          say(`Launcher detection error: ${e}`);
+        }
+      }
       fetchVersions();
     })();
     const un = listen<{ done: number; total: number }>("check-progress", (e) => setProgress(e.payload));
@@ -375,15 +388,57 @@ function App() {
     setAccount(null);
     say("Logged out.");
   }
-  async function refreshInstalls(dirOverride?: string) {
+  async function refreshInstalls(dirOverride?: string): Promise<number> {
     const dir = dirOverride ?? installationsDir;
-    if (!dir) return; // paths not resolved yet
+    if (!dir) return 0; // paths not resolved yet
     try {
       const list = await invoke<InstallationCard[]>("list_installations", { installationsDir: dir, defaultVersion: gameVersion });
       setInstalls(list);
       say(`Found ${list.length} installation(s).`);
+      return list.length;
     } catch (e) {
       say(`Error listing installs: ${e}`);
+      return 0;
+    }
+  }
+  // Re-scan for other launchers on demand (Settings). Surfaces the import
+  // banner on the Installations screen if any are found.
+  async function scanLaunchers() {
+    setBusy(true);
+    try {
+      const dl = await invoke<DetectedLauncher[]>("detect_launchers");
+      setDetected(dl);
+      if (dl.length) {
+        setView("installations");
+        toast(`Found ${dl.map((d) => `${d.count} from ${d.launcher}`).join(", ")}`);
+      } else {
+        toast("No VS Launcher or StoryForge installations found", undefined, false);
+      }
+    } catch (e) {
+      say(`Launcher scan error: ${e}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+  // Point Translocator at a detected launcher's folder and adopt in place,
+  // carrying over each install's settings from that launcher's config. No data
+  // is copied or moved; a fresh session is stamped at launch.
+  async function importFromLauncher(d: DetectedLauncher) {
+    setBusy(true);
+    try {
+      setInstallationsDir(d.installations_dir);
+      const res = await invoke<{ enriched: number; launcher: string | null }>("import_from_launcher", { installationsDir: d.installations_dir });
+      const found = await refreshInstalls(d.installations_dir);
+      setDetected([]);
+      setView("installations");
+      const carried = res.enriched > 0 ? ` (${res.enriched} with settings carried over)` : "";
+      say(`Imported ${found} installation(s) from ${d.launcher}${carried}.`);
+      toast(`Imported ${found} from ${d.launcher}${carried}`);
+    } catch (e) {
+      say(`Import error: ${e}`);
+      toast(`Import failed: ${e}`, undefined, false);
+    } finally {
+      setBusy(false);
     }
   }
   async function saveInstallation(path: string, meta: InstallationMeta) {
@@ -879,7 +934,6 @@ function App() {
     { id: "updates", label: "Updates", count: updates.length || undefined },
     { id: "mods", label: "Mods", count: installed.length || undefined },
     { id: "worlds", label: "Worlds", count: worlds.length || undefined },
-    { id: "account", label: "Account" },
     { id: "settings", label: "Settings" },
   ];
 
@@ -1131,11 +1185,29 @@ function App() {
                 }}>+ New installation</button>
               </div>
               <div className="view">
+                {detected.length > 0 && (
+                  <div className="import-banner">
+                    <div className="ib-body">
+                      <div className="ib-title">Found installations from another launcher</div>
+                      {detected.map((d) => (
+                        <div className="ib-row" key={d.installations_dir}>
+                          <span>
+                            <b>{d.count}</b> from <b>{d.launcher}</b>
+                            {d.can_enrich ? " (settings carry over)" : ""}
+                          </span>
+                          <button className="cta" disabled={busy} onClick={() => importFromLauncher(d)}>Use these</button>
+                        </div>
+                      ))}
+                      <div className="ib-note">Nothing is copied or moved. Translocator adopts them in place and stamps a fresh login at launch.</div>
+                    </div>
+                    <button className="ib-x" title="Dismiss" onClick={() => setDetected([])}>×</button>
+                  </div>
+                )}
                 {installs.length === 0 ? (
                   <div className="empty">
                     <Gear size={40} />
                     <h3>No installations found</h3>
-                    <p>Set your installations folder in Settings, then refresh.</p>
+                    <p>Point Translocator at your installations folder in Settings, or import from a launcher above.</p>
                     <button className="btn" onClick={() => setView("settings")}>Open Settings</button>
                   </div>
                 ) : (
@@ -1153,7 +1225,7 @@ function App() {
                         <div className="inst-body">
                           <div className="inst-name">{inst.meta.name}</div>
                           <div className="inst-meta tab">
-                            {inst.meta.version || "—"} · {inst.mod_count} mod{inst.mod_count === 1 ? "" : "s"}
+                            {inst.meta.version || "n/a"} · {inst.mod_count} mod{inst.mod_count === 1 ? "" : "s"}
                             {inst.has_session && <span style={{ color: "var(--ok)" }}> · ● session</span>}
                           </div>
                           <div className="inst-sub">
@@ -1261,7 +1333,7 @@ function App() {
                       })}
                     </div>
                     <p className="muted" style={{ marginTop: 14 }}>
-                      Back up copies the world into <span className="tab">.translocator-backups\worlds</span> inside the installation. Deleting a world is permanent — back it up first if unsure.
+                      Back up copies the world into <span className="tab">.translocator-backups\worlds</span> inside the installation. Deleting a world is permanent. Back it up first if unsure.
                     </p>
                   </>
                 )}
@@ -1298,7 +1370,7 @@ function App() {
               <div className="topbar"><div><div className="eyebrow">Configuration</div><h1 className="title">Settings</h1></div></div>
               <div className="view" style={{ maxWidth: 640 }}>
                 <label className="field">
-                  <span className="lab">Game executable <span className="lab-hint">— fallback; pinned installs launch from downloaded versions</span></span>
+                  <span className="lab">Game executable <span className="lab-hint">(fallback; pinned installs launch from downloaded versions)</span></span>
                   <div className="path-row">
                     <input value={gameExe} onChange={(e) => setGameExe(e.target.value)} placeholder="Vintagestory.exe" />
                     <button className="btn" type="button" onClick={browseGameExe}>Browse…</button>
@@ -1309,6 +1381,7 @@ function App() {
                   <div className="path-row">
                     <input value={installationsDir} onChange={(e) => setInstallationsDir(e.target.value)} onBlur={() => refreshInstalls(installationsDir)} placeholder="Where your installations live" />
                     <button className="btn" type="button" onClick={browseInstallsDir}>Browse…</button>
+                    <button className="btn" type="button" disabled={busy} onClick={scanLaunchers} title="Look for VS Launcher / StoryForge installations to import">Import from launcher…</button>
                   </div>
                 </label>
                 <label className="field"><span className="lab">Default game version (for newly imported installs)</span><input style={{ width: 120 }} value={gameVersion} onChange={(e) => setGameVersion(e.target.value)} /></label>
@@ -1437,7 +1510,7 @@ function App() {
             {versionProgress && (
               <div className="checking" style={{ padding: "6px 0 10px" }}>
                 <div className="prog-n tab">
-                  {versionProgress.phase === "install" ? `Installing game ${versionProgress.version} — click No if it asks to uninstall your existing game` : `Downloading game ${versionProgress.version}…`}
+                  {versionProgress.phase === "install" ? `Installing game ${versionProgress.version}. Click No if it asks to uninstall your existing game` : `Downloading game ${versionProgress.version}…`}
                 </div>
                 <div className="prog"><i className={versionProgress.pct < 0 ? "indet" : ""} style={versionProgress.pct >= 0 ? { width: `${versionProgress.pct}%` } : { width: "40%" }} /></div>
               </div>
@@ -1467,8 +1540,8 @@ function App() {
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <h3>Delete this installation?</h3>
             <p>
-              <b>{confirmDelete.meta.name}</b> and its entire folder — mods, saves, and config
-              ({confirmDelete.mod_count} mod{confirmDelete.mod_count === 1 ? "" : "s"}) — will be permanently deleted.
+              <b>{confirmDelete.meta.name}</b> and its entire folder, including mods, saves, and config
+              ({confirmDelete.mod_count} mod{confirmDelete.mod_count === 1 ? "" : "s"}), will be permanently deleted.
               This cannot be undone.
             </p>
             <div className="acts">
@@ -1514,7 +1587,7 @@ function App() {
             {versionProgress && (
               <div className="checking" style={{ padding: "6px 0 10px" }}>
                 <div className="prog-n tab">
-                  {versionProgress.phase === "install" ? `Installing game ${versionProgress.version} (this can take a minute) — click No if Windows asks to uninstall your existing Anego Studios base game` : `Downloading game ${versionProgress.version}…`}
+                  {versionProgress.phase === "install" ? `Installing game ${versionProgress.version} (this can take a minute). Click No if Windows asks to uninstall your existing Anego Studios base game` : `Downloading game ${versionProgress.version}…`}
                 </div>
                 <div className="prog"><i className={versionProgress.pct < 0 ? "indet" : ""} style={versionProgress.pct >= 0 ? { width: `${versionProgress.pct}%` } : { width: "40%" }} /></div>
               </div>

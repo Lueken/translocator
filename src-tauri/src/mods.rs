@@ -2,7 +2,7 @@
 //!
 //! Search + install hit the official ModDB API (`mods.vintagestory.at/api`).
 //! Installing downloads a release's `mainfile` zip straight into the
-//! installation's `Mods/` folder — no re-hosting, the license-safe model in the
+//! installation's `Mods/` folder - no re-hosting, the license-safe model in the
 //! brief. `fetch_full` is the shared detail fetch (releases with tags +
 //! changelogs) that the update view and donation lookup both build on.
 

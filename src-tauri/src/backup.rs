@@ -8,7 +8,7 @@
 //! - The backup root `.translocator-backups` lives inside the install but is
 //!   excluded from every Mods scan (it sits beside Mods, not within it).
 //! - An empty Mods folder still produces an (empty) backup entry so restore is
-//!   predictable — restoring it clears the Mods folder, which is the honest
+//!   predictable - restoring it clears the Mods folder, which is the honest
 //!   inverse of "there was nothing installed".
 //! - Restore is guarded against path traversal: `id` must be a simple dir name.
 
@@ -224,7 +224,7 @@ fn dir_size(dir: &Path) -> u64 {
     total
 }
 
-/// All backups for an install, newest-first — both fast Mods-only snapshots
+/// All backups for an install, newest-first - both fast Mods-only snapshots
 /// (`<id>/` dirs) and whole-install compressed snapshots (`<id>.zip`).
 pub fn list_backups(install_dir: &Path) -> Vec<BackupInfo> {
     let root = backups_root(install_dir);
@@ -288,7 +288,7 @@ pub fn restore_backup(install_dir: &Path, id: &str) -> Result<(), String> {
     if !src_dir.is_dir() {
         return Err(format!("backup {id} not found"));
     }
-    // Keep it inside the backup root even after resolving — belt and suspenders.
+    // Keep it inside the backup root even after resolving - belt and suspenders.
     let root = backups_root(install_dir);
     if !src_dir.starts_with(&root) {
         return Err(format!("invalid backup path for id: {id}"));

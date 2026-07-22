@@ -8,7 +8,7 @@
 //! cached, downloading + installing only if it isn't already there.
 //!
 //! Windows-first: the client ships only as an Inno installer (no portable zip),
-//! so `ensure_version` runs it silently into the cache folder — the same
+//! so `ensure_version` runs it silently into the cache folder - the same
 //! mechanism VS Launcher uses.
 
 use futures::StreamExt;
@@ -99,7 +99,7 @@ pub async fn fetch_available(app: &AppHandle) -> Result<Vec<AvailableVersion>, S
     let mut out = Vec::new();
     for (version, platforms) in map {
         let Some(win) = platforms.get("windows") else { continue };
-        // urls is an object { cdn, local } — prefer cdn.
+        // urls is an object { cdn, local } - prefer cdn.
         let url = win
             .get("urls")
             .and_then(|u| u.get("cdn").or_else(|| u.get("local")))
@@ -155,7 +155,7 @@ pub async fn ensure_version(app: &AppHandle, version: &str, url: &str) -> Result
     }
 
     // The official VS Windows client is an Inno-Setup installer with no
-    // extractable/portable form (innoextract can't crack current Inno Setup —
+    // extractable/portable form (innoextract can't crack current Inno Setup -
     // confirmed by VS Launcher's own author), so we run it silently into the
     // version folder exactly as VSL does. It may prompt to uninstall an existing
     // Vintage Story; the UI warns the user to click "No" beforehand.
