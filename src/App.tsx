@@ -183,13 +183,12 @@ const Chevron = ({ open }: { open: boolean }) => (
   </svg>
 );
 
-function Titlebar() {
+// No OS titlebar: the window is frameless and the controls float top-right,
+// integrated over the content. The strip itself is the drag region.
+function WindowChrome() {
   const win = getCurrentWindow();
   return (
-    <div className="titlebar" data-tauri-drag-region>
-      <img src={gearIcon} className="tb-gear" alt="" data-tauri-drag-region />
-      <span className="tb-name" data-tauri-drag-region>Translocator</span>
-      <div className="tb-drag" data-tauri-drag-region />
+    <div className="winchrome" data-tauri-drag-region>
       <button className="winbtn" title="Minimize" onClick={() => win.minimize()}>
         <svg viewBox="0 0 12 12" stroke="currentColor" strokeWidth="1.2"><line x1="2" y1="6" x2="10" y2="6" /></svg>
       </button>
@@ -1011,7 +1010,7 @@ function App() {
 
   return (
     <div className="shell">
-      <Titlebar />
+      <WindowChrome />
       <div className="layout">
         <aside className="side">
           <div className="brand">
