@@ -61,6 +61,25 @@ pub fn load_account(app: &AppHandle) -> Option<Account> {
     None
 }
 
+/// Write arbitrary bytes to a DPAPI-sealed file in the app data dir. Used for
+/// any at-rest secret beyond the account (e.g. saved-server passwords).
+pub fn save_sealed(app: &AppHandle, filename: &str, bytes: &[u8]) -> Result<(), String> {
+    let sealed = seal(bytes)?;
+    let dir = data_dir(app)?;
+    std::fs::write(dir.join(filename), sealed).map_err(|e| e.to_string())
+}
+
+/// Read + unseal a file written by `save_sealed`. `None` if absent/undecryptable.
+pub fn load_sealed(app: &AppHandle, filename: &str) -> Option<Vec<u8>> {
+    let dir = data_dir(app).ok()?;
+    let p = dir.join(filename);
+    if !p.is_file() {
+        return None;
+    }
+    let sealed = std::fs::read(&p).ok()?;
+    unseal(&sealed).ok()
+}
+
 pub fn clear_account(app: &AppHandle) -> Result<(), String> {
     let dir = data_dir(app)?;
     for name in [SEALED_FILE, LEGACY_PLAINTEXT] {

@@ -108,6 +108,7 @@ type PublicServer = {
   playstyle: string;
   description: string;
 };
+type PrivateServer = { id: string; name: string; address: string; password: string; install_path: string };
 type Theme = "almanac" | "workshop" | "terminal";
 type View = "installations" | "updates" | "mods" | "worlds" | "servers" | "market" | "pack" | "account" | "settings";
 type Toast = { id: number; msg: string; undo?: () => void; ok?: boolean };
@@ -315,6 +316,8 @@ function App() {
   const [joinServer, setJoinServer] = useState<PublicServer | null>(null);
   const [joinInstall, setJoinInstall] = useState("");
   const [joinPassword, setJoinPassword] = useState("");
+  const [privateServers, setPrivateServers] = useState<PrivateServer[]>([]);
+  const [privDraft, setPrivDraft] = useState<PrivateServer | null>(null);
 
   // game versions (shared dedup cache)
   const [availableVersions, setAvailableVersions] = useState<AvailableVersion[]>([]);
@@ -430,6 +433,11 @@ function App() {
     if (view === "servers" && serverTab === "public") loadPublicServers();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [view, serverTab]);
+
+  useEffect(() => {
+    if (view === "servers") loadPrivateServers();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [view]);
 
   const toggle = (modid: string) =>
     setExpanded((s) => {
@@ -615,14 +623,14 @@ function App() {
     setJoinInstall(match?.path ?? "");
     setJoinPassword("");
   }
-  async function connectServer(s: PublicServer, installDir: string, password: string) {
+  async function connectServer(name: string, address: string, installDir: string, password: string) {
     if (!account) return;
     setJoinServer(null);
     setBusy(true);
     const inst = installs.find((i) => i.path === installDir);
     try {
-      say(`▶ Connecting to ${s.name || s.address} via ${inst?.meta.name ?? installDir} ...`);
-      const res = await invoke<PlayResult>("connect_server", { gameExe, installDir, address: s.address, password: password || null });
+      say(`▶ Connecting to ${name || address} via ${inst?.meta.name ?? installDir} ...`);
+      const res = await invoke<PlayResult>("connect_server", { gameExe, installDir, address, password: password || null });
       if (res.status === "needsRelogin") {
         say(`✗ Session rejected by server (${res.reason}). Re-login needed.`);
         toast("Session expired. Sign in again on the Account screen.", undefined, false);
@@ -642,16 +650,48 @@ function App() {
       setBusy(false);
     }
   }
-  async function addServerToInstall(s: PublicServer, installDir: string, password: string) {
+  async function addServerToInstall(name: string, address: string, installDir: string, password: string) {
     setJoinServer(null);
     const inst = installs.find((i) => i.path === installDir);
     try {
-      await invoke("add_server_to_install", { installDir, name: s.name || s.address, address: s.address, password: password || null });
-      say(`Added ${s.name || s.address} to ${inst?.meta.name ?? installDir}'s server list.`);
+      await invoke("add_server_to_install", { installDir, name: name || address, address, password: password || null });
+      say(`Added ${name || address} to ${inst?.meta.name ?? installDir}'s server list.`);
       toast(`Added to ${inst?.meta.name ?? "installation"}; it'll show in the in-game server list`);
     } catch (e) {
       say(`Add server error: ${e}`);
       toast(`Could not add server: ${e}`, undefined, false);
+    }
+  }
+  // ---- Private (saved) servers ----
+  async function loadPrivateServers() {
+    try {
+      setPrivateServers(await invoke<PrivateServer[]>("list_private_servers"));
+    } catch (e) {
+      say(`Saved servers load error: ${e}`);
+    }
+  }
+  function openAddPrivate() {
+    setPrivDraft({ id: crypto.randomUUID(), name: "", address: "", password: "", install_path: target || installs[0]?.path || "" });
+  }
+  async function savePrivateServer(s: PrivateServer) {
+    const address = s.address.trim();
+    if (!address) return;
+    try {
+      const list = await invoke<PrivateServer[]>("save_private_server", { server: { ...s, address, name: s.name.trim() } });
+      setPrivateServers(list);
+      setPrivDraft(null);
+      toast(`Saved ${s.name.trim() || address}`);
+    } catch (e) {
+      say(`Save server error: ${e}`);
+      toast(`Could not save: ${e}`, undefined, false);
+    }
+  }
+  async function removePrivateServer(id: string) {
+    try {
+      setPrivateServers(await invoke<PrivateServer[]>("remove_private_server", { id }));
+      toast("Server removed");
+    } catch (e) {
+      say(`Remove server error: ${e}`);
     }
   }
   async function openPack(id: string) {
@@ -1617,11 +1657,52 @@ function App() {
                   </>
                 )}
                 {serverTab === "private" && (
-                  <div className="empty">
-                    <Gear size={40} />
-                    <h3>Saved servers are coming next</h3>
-                    <p>This tab will hold servers you add by address - private, whitelisted, or unlisted - each pinned to an installation, with one-click join.</p>
-                  </div>
+                  <>
+                    <div style={{ display: "flex", alignItems: "center", marginBottom: 12 }}>
+                      <span className="muted">
+                        {privateServers.length ? `${privateServers.length} saved server${privateServers.length === 1 ? "" : "s"}` : "No saved servers yet."}
+                      </span>
+                      <span className="grow" />
+                      <button className="cta" onClick={openAddPrivate}>+ Add server</button>
+                    </div>
+                    {privateServers.length === 0 ? (
+                      <div className="empty">
+                        <Gear size={40} />
+                        <h3>Save a server to join in one click</h3>
+                        <p>Add a private, whitelisted, or unlisted server by address and pin it to an installation. It won't appear in the public list.</p>
+                      </div>
+                    ) : (
+                      <div className="srv-list">
+                        {privateServers.map((s) => {
+                          const inst = installs.find((i) => i.path === s.install_path);
+                          return (
+                            <div className="srv" key={s.id}>
+                              <div className="srv-main">
+                                <div className="srv-name">{s.name || s.address}</div>
+                                <div className="srv-addr tab">{s.address}</div>
+                                <div className="srv-badges">
+                                  {inst ? <span className="sbadge ver">{inst.meta.name}</span> : <span className="sbadge warn">no installation set</span>}
+                                  {s.password && <span className="sbadge">password saved</span>}
+                                </div>
+                              </div>
+                              <div className="srv-acts">
+                                <button
+                                  className="cta"
+                                  disabled={!account || busy || !s.install_path}
+                                  title={!account ? "Sign in first" : !s.install_path ? "Edit this server to set an installation" : undefined}
+                                  onClick={() => connectServer(s.name, s.address, s.install_path, s.password)}
+                                >
+                                  Join
+                                </button>
+                                <button className="mini" onClick={() => setPrivDraft({ ...s })}>Edit</button>
+                                <button className="mini danger-mini" onClick={() => removePrivateServer(s.id)}>Remove</button>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </>
                 )}
               </div>
             </>
@@ -2065,16 +2146,40 @@ function App() {
                 </>
               )}
               <div className="acts" style={{ justifyContent: "space-between" }}>
-                <button className="mini" disabled={!joinInstall} title="Add this server to the installation's in-game multiplayer list" onClick={() => addServerToInstall(joinServer, joinInstall, joinPassword)}>Add to installation</button>
+                <button className="mini" disabled={!joinInstall} title="Add this server to the installation's in-game multiplayer list" onClick={() => addServerToInstall(joinServer.name, joinServer.address, joinInstall, joinPassword)}>Add to installation</button>
                 <span style={{ display: "flex", gap: 8 }}>
                   <button className="btn" onClick={() => setJoinServer(null)}>Cancel</button>
-                  <button className="cta" disabled={!account || !joinInstall || busy} onClick={() => connectServer(joinServer, joinInstall, joinPassword)}>Connect &amp; play</button>
+                  <button className="cta" disabled={!account || !joinInstall || busy} onClick={() => connectServer(joinServer.name, joinServer.address, joinInstall, joinPassword)}>Connect &amp; play</button>
                 </span>
               </div>
             </div>
           </div>
         );
       })()}
+
+      {/* add / edit private server modal */}
+      {privDraft && (
+        <div className="overlay" onClick={() => setPrivDraft(null)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <h3>{privateServers.some((s) => s.id === privDraft.id) ? "Edit server" : "Add server"}</h3>
+            <label className="field"><span className="lab">Name</span>
+              <input autoFocus value={privDraft.name} placeholder="My server" onChange={(e) => setPrivDraft({ ...privDraft, name: e.target.value })} /></label>
+            <label className="field"><span className="lab">Address <span className="lab-hint">(host or host:port)</span></span>
+              <input value={privDraft.address} placeholder="123.45.67.89:42420" onChange={(e) => setPrivDraft({ ...privDraft, address: e.target.value })} /></label>
+            <label className="field"><span className="lab">Installation to join with</span>
+              <select value={privDraft.install_path} onChange={(e) => setPrivDraft({ ...privDraft, install_path: e.target.value })}>
+                <option value="">— none yet —</option>
+                {installs.map((i) => (<option key={i.path} value={i.path}>{i.meta.name}{i.meta.version ? ` (${i.meta.version})` : ""}</option>))}
+              </select></label>
+            <label className="field"><span className="lab">Password <span className="lab-hint">(optional, stored sealed on this PC)</span></span>
+              <input type="password" autoComplete="off" value={privDraft.password} onChange={(e) => setPrivDraft({ ...privDraft, password: e.target.value })} /></label>
+            <div className="acts">
+              <button className="btn" onClick={() => setPrivDraft(null)}>Cancel</button>
+              <button className="cta" disabled={!privDraft.address.trim()} onClick={() => savePrivateServer(privDraft)}>Save server</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* toast stack */}
       <div className="toasts">

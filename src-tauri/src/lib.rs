@@ -535,6 +535,24 @@ async fn list_public_servers() -> Result<Vec<servers::PublicServer>, String> {
     servers::list_public_servers().await
 }
 
+/// The user's saved private servers (the Servers > Private tab).
+#[tauri::command]
+fn list_private_servers(app: AppHandle) -> Vec<servers::PrivateServer> {
+    servers::list_private(&app)
+}
+
+/// Add or update a saved private server; returns the refreshed list.
+#[tauri::command]
+fn save_private_server(app: AppHandle, server: servers::PrivateServer) -> Result<Vec<servers::PrivateServer>, String> {
+    servers::upsert_private(&app, server)
+}
+
+/// Remove a saved private server by id; returns the refreshed list.
+#[tauri::command]
+fn remove_private_server(app: AppHandle, id: String) -> Result<Vec<servers::PrivateServer>, String> {
+    servers::remove_private(&app, &id)
+}
+
 /// Installations folders belonging to other launchers (VS Launcher, StoryForge)
 /// found on this machine, so the user can point at one and adopt in place.
 #[tauri::command]
@@ -623,7 +641,10 @@ pub fn run() {
             hub_pack_manifest,
             list_public_servers,
             connect_server,
-            add_server_to_install
+            add_server_to_install,
+            list_private_servers,
+            save_private_server,
+            remove_private_server
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
