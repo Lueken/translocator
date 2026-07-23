@@ -47,6 +47,7 @@ fields are snake_case.
     "description": "…markdown for the pack page…",
     "tags": ["Survival", "Exploration", "Overhaul"],
     "game_version": "1.22.3",            // the VS version this pack targets
+    "min_launcher_version": "0.2.0",     // oldest Translocator that can install this pack
     "icon": "icon.png",                  // optional, relative asset name
     "created": "2026-07-22T00:00:00Z",
     "updated": "2026-07-22T18:00:00Z",
@@ -79,10 +80,11 @@ fields are snake_case.
     }
   ],
 
-  "config": [                            // overrides written into the install after mods resolve
+  "overrides": [                         // publisher-owned files written into the install after mods resolve
     {
-      "path": "ModConfig/PrimitiveSurvival.json",   // relative to the install dataPath
-      "content": "{ \"someSetting\": true }"        // inline text; keeps the pack a single doc
+      "path": "ModConfig/PrimitiveSurvival.json",   // relative to the install dataPath; no ".." / absolute
+      "encoding": "utf8",                // "utf8" (default) | "base64" (escape hatch for a binary override)
+      "content": "{ \"someSetting\": true }"        // inline; keeps the pack a single doc
     }
   ]
 }
@@ -102,6 +104,7 @@ fields are snake_case.
 | `description` | string (markdown) | Pack-page body. |
 | `tags` | string[] | Market filters. |
 | `game_version` | string | VS version the pack targets. |
+| `min_launcher_version` | string | Oldest Translocator that can install this pack. An older launcher refuses and prompts to update, so a pack using newer schema features never half-installs on a client that can't understand it. |
 | `icon` | string? | Optional asset name for the pack logo. |
 | `created` / `updated` | ISO 8601 | Timestamps. |
 | `moddb` | object? | `{modid, assetid}` once the pack is a ModDB entry; both `null` until then. |
@@ -131,19 +134,26 @@ mods-only pack omits this block entirely.
 | `sha256` | string | Lowercase hex. Curator-computed; verified on download. |
 | `required` | bool | `true` = always installed and frozen. `false` = optional (see below). |
 
-### `config[]` (optional)
+### `overrides[]` (optional)
 
-Override files written into the install after mods resolve.
+Publisher-owned files written into the install after mods resolve. This is the
+publisher's own content (config choices, assets), **not** third-party mods, so
+the ModDB-only rule does not apply here. Overrides overwrite by design: that is
+how a pack forces a specific config. The main use is `ModConfig/*.json`.
 
 | Field | Type | Notes |
 |-------|------|-------|
 | `path` | string | Relative to the install dataPath. **Must not** be absolute or contain `..`. |
-| `content` | string | Inline file text (VS configs are JSON). |
+| `encoding` | enum? | `utf8` (default) or `base64`. Use `base64` only for the occasional binary override; large binaries inline bloat the manifest and are discouraged. |
+| `content` | string | Inline file content, decoded per `encoding`. |
 
 ## Install / resolution algorithm
 
 Given a manifest, a pack-managed install is built as:
 
+0. **Gate on launcher version.** If this Translocator is older than
+   `pack.min_launcher_version`, refuse the install and prompt the user to update
+   the launcher. This runs before anything is written.
 1. **Select mods.** Take every entry where `side != "server"` (server-only mods
    are listed for the record but never loaded on the client, so they are skipped
    client-side) and (`required == true` **or** the user opted the mod in).
@@ -153,8 +163,10 @@ Given a manifest, a pack-managed install is built as:
    mismatch, discard and fail the install for that mod. Confirm the file is a
    real zip (`PK` magic) before it lands in `Mods/`.
 4. **Place.** Move verified zips into the install's `Mods/` folder.
-5. **Apply config.** Write each `config[].content` to `<install>/<path>` after
-   validating the path is relative and contains no `..`.
+5. **Apply overrides.** For each `overrides[]` entry, decode `content` per
+   `encoding` (`utf8` default, else `base64`) and write it to `<install>/<path>`
+   after validating the path is relative and contains no `..`. Overrides
+   overwrite existing files.
 6. **Freeze.** Record `managed_by: "<pack.id>@<pack.version>"` in the install's
    `translocator.json`. While this is set, the per-mod update manager is
    disabled; the only update action is "pack update available" (see below).
@@ -188,10 +200,12 @@ extra HUD). Rules:
 A manifest is rejected if any of the following fail:
 
 - `manifest_version` is a supported integer.
-- `pack.id`, `pack.name`, `pack.version`, `pack.game_version` are non-empty.
+- `pack.id`, `pack.name`, `pack.version`, `pack.game_version`, and
+  `pack.min_launcher_version` are non-empty.
 - Every `mods[]` entry has `modid`, `fileid`, and a 64-char lowercase-hex
   `sha256`. (ModDB-only: there is no non-ModDB source, so a mod without a
   `fileid` is invalid.)
 - `side` is one of `client` / `server` / `both`.
-- Every `config[].path` is relative, contains no `..`, and does not resolve
+- Every `overrides[]` entry has `encoding` of `utf8` or `base64` (or omitted =
+  `utf8`), and a `path` that is relative, contains no `..`, and does not resolve
   outside the install dataPath.
