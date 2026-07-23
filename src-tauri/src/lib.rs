@@ -7,7 +7,9 @@
 
 mod auth;
 mod backup;
+mod curator;
 mod deps;
+mod manifest;
 mod installations;
 mod launch;
 mod migrate;
@@ -429,6 +431,36 @@ fn suggested_paths(app: AppHandle) -> SuggestedPaths {
     }
 }
 
+/// Build a modpack manifest from an installation: resolve every mod against
+/// ModDB, pin it with a local SHA-256, and report the mods that aren't on ModDB.
+/// Publishing is a separate, explicit step. `min_launcher_version` defaults to
+/// this launcher's version when the caller leaves it blank.
+#[tauri::command]
+async fn curate_pack(
+    install_dir: String,
+    mut pack: manifest::ManifestPack,
+    server: Option<manifest::ManifestServer>,
+    links: Option<manifest::ManifestLinks>,
+    override_paths: Vec<String>,
+) -> Result<curator::CuratorPreview, String> {
+    if pack.min_launcher_version.trim().is_empty() {
+        pack.min_launcher_version = env!("CARGO_PKG_VERSION").to_string();
+    }
+    curator::build_manifest(&PathBuf::from(install_dir), pack, links, server, override_paths).await
+}
+
+/// Publish a built manifest to the Hub (authed with the publisher token).
+#[tauri::command]
+async fn publish_pack(hub_url: String, token: String, manifest: manifest::Manifest) -> Result<String, String> {
+    curator::publish(&hub_url, &token, &manifest).await
+}
+
+/// `ModConfig/*.json` files in an install, as override candidates for the curator.
+#[tauri::command]
+fn list_config_files(install_dir: String) -> Vec<String> {
+    curator::list_config_files(&PathBuf::from(install_dir))
+}
+
 /// Installations folders belonging to other launchers (VS Launcher, StoryForge)
 /// found on this machine, so the user can point at one and adopt in place.
 #[tauri::command]
@@ -508,7 +540,10 @@ pub fn run() {
             delete_world,
             suggested_paths,
             detect_launchers,
-            import_from_launcher
+            import_from_launcher,
+            curate_pack,
+            publish_pack,
+            list_config_files
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

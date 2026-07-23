@@ -130,9 +130,15 @@ struct FullModResponse {
 #[derive(Deserialize)]
 struct FullModDetail {
     #[serde(default)]
+    modid: u64,
+    #[serde(default)]
     name: String,
     #[serde(default)]
     assetid: u64,
+    /// Which side loads the mod: "client" | "server" | "both" (VS may say
+    /// "universal"). Used to build a pack's per-mod `side`.
+    #[serde(default)]
+    side: String,
     #[serde(default)]
     text: String,
     // Present once upstream exposes it (anegostudios/vsmoddb#143); harmless until then.
@@ -147,6 +153,12 @@ struct FullModDetail {
 #[derive(Deserialize, Clone)]
 pub struct FullRelease {
     pub mainfile: String,
+    /// The download pin: `/download?fileid=<fileid>`.
+    #[serde(default)]
+    pub fileid: u64,
+    /// The release record id (links to its changelog).
+    #[serde(default)]
+    pub releaseid: u64,
     #[serde(default)]
     pub filename: String,
     #[serde(default)]
@@ -160,8 +172,10 @@ pub struct FullRelease {
 }
 
 pub struct ModFull {
+    pub modid: u64,
     pub name: String,
     pub assetid: u64,
+    pub side: String,
     pub text: String,
     pub donateurl: Option<String>,
     pub releases: Vec<FullRelease>,
@@ -180,8 +194,10 @@ pub async fn fetch_full(client: &reqwest::Client, modidstr: &str) -> Result<ModF
         .map_err(|e| format!("mod detail parse ({modidstr}): {e}"))?;
     let d = r.mod_detail;
     Ok(ModFull {
+        modid: d.modid,
         name: d.name,
         assetid: d.assetid,
+        side: d.side,
         text: d.text,
         donateurl: d.donateurl,
         releases: d.releases,
