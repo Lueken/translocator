@@ -65,9 +65,44 @@ type WorldInfo = {
   parsed: boolean;
 };
 type DetectedLauncher = { launcher: string; installations_dir: string; can_enrich: boolean; count: number };
+// ---- Hub / Market types (src-tauri/src/hub.rs) ----
+type PackSummary = {
+  id: string;
+  name: string;
+  summary?: string | null;
+  tags?: string[] | null;
+  game_version?: string | null;
+  icon?: string | null;
+  latest_version?: string | null;
+  updated?: string | null;
+};
+type PackManifestMod = { modid: number; modidstr: string; name: string; modversion: string; side: string; required: boolean };
+type PackManifest = {
+  manifest_version: number;
+  pack: { id: string; name: string; version: string; author: string; summary?: string; description?: string; tags?: string[]; game_version: string; icon?: string };
+  links?: { website?: string; discord?: string; source?: string; donate?: string } | null;
+  server?: { address: string; auto_add: boolean } | null;
+  mods: PackManifestMod[];
+  overrides?: { path: string }[];
+};
+type PackDetail = {
+  id: string;
+  name: string;
+  summary?: string | null;
+  tags?: string[] | null;
+  icon?: string | null;
+  gameVersion?: string | null;
+  links?: { website?: string; discord?: string; source?: string; donate?: string } | null;
+  latest_version?: string | null;
+  published?: string | null;
+};
 type Theme = "almanac" | "workshop" | "terminal";
-type View = "installations" | "updates" | "mods" | "worlds" | "account" | "settings";
+type View = "installations" | "updates" | "mods" | "worlds" | "servers" | "market" | "pack" | "account" | "settings";
 type Toast = { id: number; msg: string; undo?: () => void; ok?: boolean };
+
+// The Hub base URL. Read-only Market/pack calls route through Rust (the webview
+// CSP forbids direct network access).
+const HUB_URL = "https://api.translocator.app";
 
 // Paths start from localStorage; on first run they're filled from
 // `suggested_paths` (resolved to this machine's %APPDATA%), never hardcoded.
@@ -245,6 +280,17 @@ function App() {
   const [worldsBusy, setWorldsBusy] = useState(false);
   const [confirmDeleteWorld, setConfirmDeleteWorld] = useState<WorldInfo | null>(null);
 
+  // ---- Market / packs ----
+  const [packs, setPacks] = useState<PackSummary[]>([]);
+  const [packsBusy, setPacksBusy] = useState(false);
+  const [packsLoaded, setPacksLoaded] = useState(false);
+  const [packsError, setPacksError] = useState<string | null>(null);
+  const [selectedPack, setSelectedPack] = useState<string | null>(null);
+  const [packDetail, setPackDetail] = useState<PackDetail | null>(null);
+  const [packManifest, setPackManifest] = useState<PackManifest | null>(null);
+  const [packBusy, setPackBusy] = useState(false);
+  const [packError, setPackError] = useState<string | null>(null);
+
   // game versions (shared dedup cache)
   const [availableVersions, setAvailableVersions] = useState<AvailableVersion[]>([]);
   const [versionProgress, setVersionProgress] = useState<{ version: string; phase: string; pct: number } | null>(null);
@@ -349,6 +395,11 @@ function App() {
     if (view === "worlds" && target) refreshWorlds(target);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [view, target]);
+
+  useEffect(() => {
+    if (view === "market") loadPacks();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [view]);
 
   const toggle = (modid: string) =>
     setExpanded((s) => {
@@ -494,6 +545,42 @@ function App() {
       setBusy(false);
     }
   }
+  // ---- Market ----
+  async function loadPacks(force = false) {
+    if (packsBusy) return;
+    if (packsLoaded && !force) return;
+    setPacksBusy(true);
+    setPacksError(null);
+    try {
+      setPacks(await invoke<PackSummary[]>("hub_list_packs", { hubUrl: HUB_URL }));
+      setPacksLoaded(true);
+    } catch (e) {
+      setPacksError(String(e));
+    } finally {
+      setPacksBusy(false);
+    }
+  }
+  async function openPack(id: string) {
+    setSelectedPack(id);
+    setView("pack");
+    setPackBusy(true);
+    setPackError(null);
+    setPackDetail(null);
+    setPackManifest(null);
+    try {
+      const [detail, manifest] = await Promise.all([
+        invoke<PackDetail>("hub_pack", { hubUrl: HUB_URL, id }),
+        invoke<PackManifest>("hub_pack_manifest", { hubUrl: HUB_URL, id, version: null }),
+      ]);
+      setPackDetail(detail);
+      setPackManifest(manifest);
+    } catch (e) {
+      setPackError(String(e));
+    } finally {
+      setPackBusy(false);
+    }
+  }
+
   // Native folder picker for the installations directory; re-lists on pick.
   async function browseInstallsDir() {
     try {
@@ -929,9 +1016,11 @@ function App() {
   const targetName = targetInfo?.meta.name ?? "";
   const NAV: { id: View; label: string; count?: number }[] = [
     { id: "installations", label: "Installations", count: installs.length },
-    { id: "updates", label: "Updates", count: updates.length || undefined },
-    { id: "mods", label: "Mods", count: installed.length || undefined },
+    { id: "updates", label: "Mod Updates", count: updates.length || undefined },
     { id: "worlds", label: "Worlds", count: worlds.length || undefined },
+    { id: "servers", label: "Servers" },
+    { id: "market", label: "Modpacks", count: packs.length || undefined },
+    { id: "mods", label: "Mods", count: installed.length || undefined },
     { id: "settings", label: "Settings" },
   ];
 
@@ -1029,14 +1118,16 @@ function App() {
             </div>
           </button>
           <div className="hr" />
-          <div className="idx">Index</div>
           <nav>
-            {NAV.map((n) => (
-              <button key={n.id} className={"navbtn" + (view === n.id ? " active" : "")} onClick={() => setView(n.id)}>
-                <span className="l">{n.label}</span>
-                <span className="c">{n.count ?? ""}</span>
-              </button>
-            ))}
+            {NAV.map((n) => {
+              const active = view === n.id || (n.id === "market" && view === "pack");
+              return (
+                <button key={n.id} className={"navbtn" + (active ? " active" : "")} onClick={() => setView(n.id)}>
+                  <span className="l">{n.label}</span>
+                  <span className="c">{n.count ?? ""}</span>
+                </button>
+              );
+            })}
           </nav>
           {targetInfo && (
             <div className="dock">
@@ -1333,6 +1424,160 @@ function App() {
                     <p className="muted" style={{ marginTop: 14 }}>
                       Back up copies the world into <span className="tab">.translocator-backups\worlds</span> inside the installation. Deleting a world is permanent. Back it up first if unsure.
                     </p>
+                  </>
+                )}
+              </div>
+            </>
+          )}
+
+          {/* ---------------- SERVERS (placeholder) ---------------- */}
+          {view === "servers" && (
+            <>
+              <div className="topbar"><div><div className="eyebrow">Multiplayer</div><h1 className="title">Servers</h1></div></div>
+              <div className="view">
+                <div className="empty">
+                  <Gear size={40} />
+                  <h3>Server browser is on the way</h3>
+                  <p>Public and private server lists will live here, so you can join The Quire and your own servers without hunting down an address.</p>
+                </div>
+              </div>
+            </>
+          )}
+
+          {/* ---------------- MODPACKS ---------------- */}
+          {view === "market" && (
+            <>
+              <div className="topbar">
+                <div><div className="eyebrow">Published packs</div><h1 className="title">Modpacks</h1></div>
+                <span className="grow" />
+                <button className="btn" disabled={packsBusy} onClick={() => loadPacks(true)}>{packsBusy ? "Loading…" : "Refresh"}</button>
+              </div>
+              <div className="view">
+                {packsError && (
+                  <div className="empty">
+                    <Gear size={40} />
+                    <h3>Could not reach the Market</h3>
+                    <p>{packsError}</p>
+                    <button className="btn" disabled={packsBusy} onClick={() => loadPacks(true)}>Try again</button>
+                  </div>
+                )}
+                {!packsError && packsBusy && packs.length === 0 && <p className="muted">Loading packs…</p>}
+                {!packsError && !packsBusy && packs.length === 0 && (
+                  <div className="empty">
+                    <Gear size={40} />
+                    <h3>No packs published yet</h3>
+                    <p>Published modpacks appear here. Curate one from an installation to be the first.</p>
+                  </div>
+                )}
+                {packs.length > 0 && (
+                  <div className="pack-grid">
+                    {packs.map((p) => (
+                      <button className="pack-card" key={p.id} onClick={() => openPack(p.id)}>
+                        <div className="pack-ico">{p.icon || p.name[0]?.toUpperCase() || "?"}</div>
+                        <div className="pack-body">
+                          <div className="pack-name">{p.name}</div>
+                          {p.summary && <div className="pack-sum">{p.summary}</div>}
+                          <div className="pack-meta tab">
+                            {p.game_version ? `VS ${p.game_version}` : "any version"}
+                            {p.latest_version ? ` · v${p.latest_version}` : " · unpublished"}
+                          </div>
+                          {p.tags && p.tags.length > 0 && (
+                            <div className="pack-tags">
+                              {p.tags.slice(0, 4).map((t) => (<span className="tagchip" key={t}>{t}</span>))}
+                            </div>
+                          )}
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </>
+          )}
+
+          {/* ---------------- PACK PAGE ---------------- */}
+          {view === "pack" && (
+            <>
+              <div className="topbar">
+                <button className="btn" onClick={() => setView("market")}>← Market</button>
+                <div style={{ marginLeft: 4 }}>
+                  <div className="eyebrow">Pack</div>
+                  <h1 className="title">{packManifest?.pack.name ?? packDetail?.name ?? selectedPack}</h1>
+                </div>
+                <span className="grow" />
+                {selectedPack && <button className="btn" disabled={packBusy} onClick={() => openPack(selectedPack)}>Refresh</button>}
+              </div>
+              <div className="view">
+                {packError && (
+                  <div className="empty">
+                    <Gear size={40} />
+                    <h3>Could not open this pack</h3>
+                    <p>{packError}</p>
+                  </div>
+                )}
+                {!packError && packBusy && !packManifest && <p className="muted">Loading pack…</p>}
+                {!packError && packManifest && (
+                  <>
+                    <div className="pack-head">
+                      <div className="pack-head-ico">{packManifest.pack.icon || packManifest.pack.name[0]?.toUpperCase() || "?"}</div>
+                      <div>
+                        <div className="pack-head-meta tab">
+                          v{packManifest.pack.version} · VS {packManifest.pack.game_version} · by {packManifest.pack.author}
+                        </div>
+                        {(packManifest.pack.summary || packDetail?.summary) && (
+                          <p className="pack-head-sum">{packManifest.pack.summary || packDetail?.summary}</p>
+                        )}
+                        {packManifest.pack.tags && packManifest.pack.tags.length > 0 && (
+                          <div className="pack-tags">
+                            {packManifest.pack.tags.map((t) => (<span className="tagchip" key={t}>{t}</span>))}
+                          </div>
+                        )}
+                        {(() => {
+                          const l = packManifest.links ?? packDetail?.links ?? undefined;
+                          const entries = ([
+                            l?.website && (["Website", l.website] as const),
+                            l?.discord && (["Discord", l.discord] as const),
+                            l?.source && (["Source", l.source] as const),
+                            l?.donate && (["Donate", l.donate] as const),
+                          ].filter(Boolean)) as (readonly [string, string])[];
+                          return entries.length ? (
+                            <div className="pack-links">
+                              {entries.map(([label, url]) => (
+                                <button className="link" key={label} onClick={() => invoke("open_url", { url })}>{label} ↗</button>
+                              ))}
+                            </div>
+                          ) : null;
+                        })()}
+                      </div>
+                    </div>
+
+                    {packManifest.pack.description && <p className="pack-desc">{packManifest.pack.description}</p>}
+
+                    {packManifest.server && (
+                      <div className="pack-server">
+                        <b>Server</b> <span className="tab">{packManifest.server.address}</span>
+                        {packManifest.server.auto_add ? " · added to your multiplayer list on install" : ""}
+                      </div>
+                    )}
+
+                    <div className="pack-mods-hd">
+                      <h3>{packManifest.mods.length} mod{packManifest.mods.length === 1 ? "" : "s"}</h3>
+                      {packManifest.overrides && packManifest.overrides.length > 0 && (
+                        <span className="muted">· {packManifest.overrides.length} config override{packManifest.overrides.length === 1 ? "" : "s"}</span>
+                      )}
+                    </div>
+                    <div className="list">
+                      {packManifest.mods.map((m) => (
+                        <div className="li" key={m.modidstr}>
+                          <span>
+                            <span className="nm">{m.name}</span>{" "}
+                            <span className="meta">{m.modidstr} · {m.side}{m.required ? "" : " · optional"}</span>
+                          </span>
+                          <span className="tab">{m.modversion}</span>
+                        </div>
+                      ))}
+                    </div>
+                    <p className="muted" style={{ marginTop: 12 }}>Installing a pack lands in a later build; this is the read-only pack page for now.</p>
                   </>
                 )}
               </div>

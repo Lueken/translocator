@@ -9,6 +9,7 @@ mod auth;
 mod backup;
 mod curator;
 mod deps;
+mod hub;
 mod manifest;
 mod installations;
 mod launch;
@@ -461,6 +462,28 @@ fn list_config_files(install_dir: String) -> Vec<String> {
     curator::list_config_files(&PathBuf::from(install_dir))
 }
 
+/// Browse published packs on the Hub (the Market list).
+#[tauri::command]
+async fn hub_list_packs(hub_url: String) -> Result<Vec<hub::PackSummary>, String> {
+    hub::list_packs(&hub_url).await
+}
+
+/// Full record for one pack (the Pack page header).
+#[tauri::command]
+async fn hub_pack(hub_url: String, id: String) -> Result<serde_json::Value, String> {
+    hub::pack_detail(&hub_url, &id).await
+}
+
+/// A pack's manifest (latest, or a pinned version), for its mod + override list.
+#[tauri::command]
+async fn hub_pack_manifest(
+    hub_url: String,
+    id: String,
+    version: Option<String>,
+) -> Result<manifest::Manifest, String> {
+    hub::pack_manifest(&hub_url, &id, version.as_deref()).await
+}
+
 /// Installations folders belonging to other launchers (VS Launcher, StoryForge)
 /// found on this machine, so the user can point at one and adopt in place.
 #[tauri::command]
@@ -543,7 +566,10 @@ pub fn run() {
             import_from_launcher,
             curate_pack,
             publish_pack,
-            list_config_files
+            list_config_files,
+            hub_list_packs,
+            hub_pack,
+            hub_pack_manifest
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -128,14 +128,14 @@ input:focus-visible,select:focus-visible{outline:2px solid var(--accent);outline
 
 /* ---------- sidebar ---------- */
 .side{background:linear-gradient(180deg,var(--side-bg2),var(--side-bg));border-right:1px solid #05080780;
-  display:flex;flex-direction:column;padding:42px 14px 18px;color:var(--side-fg)}
+  display:flex;flex-direction:column;padding:38px 14px 18px;color:var(--side-fg)}
 :root[data-theme="terminal"] .side{border:1px solid var(--side-line);border-right:1px solid var(--side-line)}
-.brand{display:flex;align-items:center;gap:11px;padding:2px 4px 4px}
+.brand{display:flex;align-items:center;gap:12px;padding:2px 4px 6px}
 .gear{width:32px;height:32px;color:var(--rail);flex:none;animation:spin 46s linear infinite}
 @media (prefers-reduced-motion:reduce){.gear{animation:none}}
 @keyframes spin{to{transform:rotate(360deg)}}
 /* raster brand mark (the rusted-gears art) */
-.brand-gear{width:34px;height:34px;flex:none;object-fit:contain}
+.brand-gear{width:46px;height:46px;flex:none;object-fit:contain}
 .brand-name{font-family:var(--title-font);font-size:19px;letter-spacing:.02em;line-height:1;color:var(--side-fg)}
 .brand-sub{font-size:10px;letter-spacing:.18em;text-transform:uppercase;color:var(--side-faint);margin-top:5px}
 .hr{height:1px;background:var(--side-line);margin:15px 2px}
@@ -407,6 +407,39 @@ nav{display:flex;flex-direction:column;margin-top:2px}
 
 .logbox{margin-top:8px;max-height:260px;overflow:auto;background:#0d0b09;color:#d8cbb0;padding:12px;
   border-radius:var(--radius);font-family:var(--font-mono);font-size:12px;white-space:pre-wrap;border:1px solid var(--line)}
+
+/* ---------- modpacks (pack browse) ---------- */
+.pack-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:12px}
+.pack-card{display:flex;gap:13px;padding:14px;text-align:left;cursor:pointer;
+  border:1px solid var(--line);border-radius:var(--radius);background:var(--content-bg2);color:var(--fg)}
+.pack-card:hover{border-color:var(--accent-ink)}
+.pack-card:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.pack-ico{width:44px;height:44px;flex:none;border-radius:var(--radius);display:grid;place-items:center;
+  font-family:var(--title-font);font-size:20px;color:var(--accent-fg);
+  background:radial-gradient(circle at 34% 30%,var(--accent-ink),var(--accent))}
+.pack-body{min-width:0;flex:1}
+.pack-name{font-family:var(--nm-font);font-size:16px;color:var(--fg)}
+.pack-sum{font-size:12.5px;color:var(--fg-muted);margin-top:2px;line-height:1.35;
+  display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.pack-meta{font-size:11px;color:var(--fg-faint);font-family:var(--font-mono);margin-top:6px}
+.pack-tags{display:flex;flex-wrap:wrap;gap:5px;margin-top:8px}
+.tagchip{font-size:10.5px;letter-spacing:.02em;padding:2px 7px;border-radius:var(--pill-radius);
+  color:var(--accent-ink);border:1px solid color-mix(in srgb,var(--accent) 40%,transparent);
+  background:color-mix(in srgb,var(--accent) 10%,transparent)}
+
+/* ---------- pack page ---------- */
+.pack-head{display:flex;gap:16px;align-items:flex-start;margin-bottom:14px}
+.pack-head-ico{width:60px;height:60px;flex:none;border-radius:var(--radius);display:grid;place-items:center;
+  font-family:var(--title-font);font-size:28px;color:var(--accent-fg);
+  background:radial-gradient(circle at 34% 30%,var(--accent-ink),var(--accent))}
+.pack-head-meta{font-size:12px;color:var(--fg-faint);font-family:var(--font-mono)}
+.pack-head-sum{font-size:14px;color:var(--fg-muted);margin:6px 0 0;line-height:1.4;max-width:60ch}
+.pack-links{display:flex;flex-wrap:wrap;gap:14px;margin-top:10px}
+.pack-desc{font-size:13.5px;color:var(--fg-muted);line-height:1.5;max-width:70ch;margin:0 0 14px}
+.pack-server{border:1px solid var(--line);border-radius:var(--radius);background:var(--content-bg2);
+  padding:9px 12px;margin:0 0 14px;font-size:13px;color:var(--fg-muted)}
+.pack-mods-hd{display:flex;align-items:baseline;gap:8px;margin:4px 0 8px}
+.pack-mods-hd h3{font-family:var(--title-font);font-size:16px;margin:0}
 
 @media (max-width:840px){
   .layout{grid-template-columns:1fr;height:auto}
