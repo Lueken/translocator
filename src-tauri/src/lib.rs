@@ -16,6 +16,7 @@ mod launch;
 mod migrate;
 mod models;
 mod mods;
+mod servers;
 mod session;
 mod store;
 mod updates;
@@ -484,6 +485,12 @@ async fn hub_pack_manifest(
     hub::pack_manifest(&hub_url, &id, version.as_deref()).await
 }
 
+/// The Vintage Story masterserver public server list (the Servers > Public tab).
+#[tauri::command]
+async fn list_public_servers() -> Result<Vec<servers::PublicServer>, String> {
+    servers::list_public_servers().await
+}
+
 /// Installations folders belonging to other launchers (VS Launcher, StoryForge)
 /// found on this machine, so the user can point at one and adopt in place.
 #[tauri::command]
@@ -569,7 +576,8 @@ pub fn run() {
             list_config_files,
             hub_list_packs,
             hub_pack,
-            hub_pack_manifest
+            hub_pack_manifest,
+            list_public_servers
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -96,6 +96,18 @@ type PackDetail = {
   latest_version?: string | null;
   published?: string | null;
 };
+type PublicServer = {
+  name: string;
+  address: string;
+  players: number;
+  max_players: number;
+  game_version: string;
+  mod_count: number;
+  has_password: boolean;
+  whitelisted: boolean;
+  playstyle: string;
+  description: string;
+};
 type Theme = "almanac" | "workshop" | "terminal";
 type View = "installations" | "updates" | "mods" | "worlds" | "servers" | "market" | "pack" | "account" | "settings";
 type Toast = { id: number; msg: string; undo?: () => void; ok?: boolean };
@@ -291,6 +303,16 @@ function App() {
   const [packBusy, setPackBusy] = useState(false);
   const [packError, setPackError] = useState<string | null>(null);
 
+  // ---- Servers ----
+  const [serverTab, setServerTab] = useState<"public" | "private">("public");
+  const [publicServers, setPublicServers] = useState<PublicServer[]>([]);
+  const [serversBusy, setServersBusy] = useState(false);
+  const [serversLoaded, setServersLoaded] = useState(false);
+  const [serversError, setServersError] = useState<string | null>(null);
+  const [serverSearch, setServerSearch] = useState("");
+  const [serverVersionFilter, setServerVersionFilter] = useState("");
+  const [serverSort, setServerSort] = useState<"players" | "name">("players");
+
   // game versions (shared dedup cache)
   const [availableVersions, setAvailableVersions] = useState<AvailableVersion[]>([]);
   const [versionProgress, setVersionProgress] = useState<{ version: string; phase: string; pct: number } | null>(null);
@@ -400,6 +422,11 @@ function App() {
     if (view === "market") loadPacks();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [view]);
+
+  useEffect(() => {
+    if (view === "servers" && serverTab === "public") loadPublicServers();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [view, serverTab]);
 
   const toggle = (modid: string) =>
     setExpanded((s) => {
@@ -558,6 +585,20 @@ function App() {
       setPacksError(String(e));
     } finally {
       setPacksBusy(false);
+    }
+  }
+  async function loadPublicServers(force = false) {
+    if (serversBusy) return;
+    if (serversLoaded && !force) return;
+    setServersBusy(true);
+    setServersError(null);
+    try {
+      setPublicServers(await invoke<PublicServer[]>("list_public_servers"));
+      setServersLoaded(true);
+    } catch (e) {
+      setServersError(String(e));
+    } finally {
+      setServersBusy(false);
     }
   }
   async function openPack(id: string) {
@@ -1012,6 +1053,25 @@ function App() {
     (u) => pins.includes(u.modid) || ignores[u.modid] === (u.latest_compatible ?? u.newer[0]?.modversion)
   ).length;
 
+  // ---- derived state for the server browser ----
+  const SERVER_CAP = 150; // keep the DOM light; refine with search/filter
+  const serverVersions = useMemo(() => {
+    const set = new Set(publicServers.map((s) => s.game_version).filter(Boolean));
+    return Array.from(set).sort((a, b) => b.localeCompare(a, undefined, { numeric: true }));
+  }, [publicServers]);
+  const filteredServers = useMemo(() => {
+    const q = serverSearch.trim().toLowerCase();
+    const list = publicServers.filter((s) => {
+      if (serverVersionFilter && s.game_version !== serverVersionFilter) return false;
+      if (q && !`${s.name} ${s.address} ${s.description}`.toLowerCase().includes(q)) return false;
+      return true;
+    });
+    return list.sort((a, b) =>
+      serverSort === "players" ? b.players - a.players || a.name.localeCompare(b.name) : a.name.localeCompare(b.name)
+    );
+  }, [publicServers, serverSearch, serverVersionFilter, serverSort]);
+  const shownServers = filteredServers.slice(0, SERVER_CAP);
+
   const targetInfo = installs.find((i) => i.path === target);
   const targetName = targetInfo?.meta.name ?? "";
   const NAV: { id: View; label: string; count?: number }[] = [
@@ -1430,16 +1490,83 @@ function App() {
             </>
           )}
 
-          {/* ---------------- SERVERS (placeholder) ---------------- */}
+          {/* ---------------- SERVERS ---------------- */}
           {view === "servers" && (
             <>
-              <div className="topbar"><div><div className="eyebrow">Multiplayer</div><h1 className="title">Servers</h1></div></div>
+              <div className="topbar">
+                <div><div className="eyebrow">Multiplayer</div><h1 className="title">Servers</h1></div>
+                <span className="grow" />
+                {serverTab === "public" && (
+                  <button className="btn" disabled={serversBusy} onClick={() => loadPublicServers(true)}>{serversBusy ? "Loading…" : "Refresh"}</button>
+                )}
+              </div>
+              <div className="subtabs">
+                <button className={"subtab" + (serverTab === "public" ? " on" : "")} onClick={() => setServerTab("public")}>Public</button>
+                <button className={"subtab" + (serverTab === "private" ? " on" : "")} onClick={() => setServerTab("private")}>Private</button>
+              </div>
               <div className="view">
-                <div className="empty">
-                  <Gear size={40} />
-                  <h3>Server browser is on the way</h3>
-                  <p>Public and private server lists will live here, so you can join The Quire and your own servers without hunting down an address.</p>
-                </div>
+                {serverTab === "public" && (
+                  <>
+                    {serversError && (
+                      <div className="empty">
+                        <Gear size={40} />
+                        <h3>Could not load the server list</h3>
+                        <p>{serversError}</p>
+                        <button className="btn" disabled={serversBusy} onClick={() => loadPublicServers(true)}>Try again</button>
+                      </div>
+                    )}
+                    {!serversError && serversBusy && publicServers.length === 0 && <p className="muted">Loading the public server list…</p>}
+                    {!serversError && publicServers.length > 0 && (
+                      <>
+                        <div className="srv-toolbar">
+                          <input className="filterbox" placeholder="Search name, address, description…" value={serverSearch} onChange={(e) => setServerSearch(e.target.value)} />
+                          <select value={serverVersionFilter} onChange={(e) => setServerVersionFilter(e.target.value)}>
+                            <option value="">All versions</option>
+                            {serverVersions.map((v) => (<option key={v} value={v}>{v}</option>))}
+                          </select>
+                          <select value={serverSort} onChange={(e) => setServerSort(e.target.value as "players" | "name")}>
+                            <option value="players">Most players</option>
+                            <option value="name">Name (A–Z)</option>
+                          </select>
+                          <span className="grow" />
+                          <span className="counts">{filteredServers.length} server{filteredServers.length === 1 ? "" : "s"}</span>
+                        </div>
+                        <div className="srv-list">
+                          {shownServers.map((s) => (
+                            <div className="srv" key={s.address}>
+                              <div className="srv-main">
+                                <div className="srv-name">{s.name || s.address}</div>
+                                <div className="srv-addr tab">{s.address}</div>
+                                {s.description && <div className="srv-desc">{stripHtml(s.description)}</div>}
+                                <div className="srv-badges">
+                                  <span className="sbadge ver">VS {s.game_version || "?"}</span>
+                                  <span className="sbadge"><b>{s.players}/{s.max_players || "?"}</b> online</span>
+                                  {s.mod_count > 0 && <span className="sbadge">{s.mod_count} mods</span>}
+                                  {s.playstyle && <span className="sbadge">{playstyleLabel(s.playstyle)}</span>}
+                                  {s.whitelisted && <span className="sbadge warn">whitelisted</span>}
+                                  {s.has_password && <span className="sbadge warn">password</span>}
+                                </div>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                        {filteredServers.length > shownServers.length && (
+                          <p className="muted" style={{ marginTop: 12 }}>
+                            Showing the top {shownServers.length} of {filteredServers.length}. Narrow with search or the version filter.
+                          </p>
+                        )}
+                        {filteredServers.length === 0 && <p className="muted">No servers match your filters.</p>}
+                      </>
+                    )}
+                  </>
+                )}
+                {serverTab === "private" && (
+                  <div className="empty">
+                    <Gear size={40} />
+                    <h3>Saved servers are coming next</h3>
+                    <p>This tab will hold servers you add by address - private, whitelisted, or unlisted - each pinned to an installation, with one-click join.</p>
+                  </div>
+                )}
               </div>
             </>
           )}

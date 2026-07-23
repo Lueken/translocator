@@ -441,6 +441,33 @@ nav{display:flex;flex-direction:column;margin-top:2px}
 .pack-mods-hd{display:flex;align-items:baseline;gap:8px;margin:4px 0 8px}
 .pack-mods-hd h3{font-family:var(--title-font);font-size:16px;margin:0}
 
+/* ---------- sub-tabs (servers) ---------- */
+.subtabs{display:flex;gap:2px;padding:10px 24px 0}
+.subtab{background:none;border:none;border-bottom:2px solid transparent;cursor:pointer;
+  padding:7px 14px;font-family:var(--nm-font);font-size:14px;color:var(--fg-muted)}
+.subtab:hover{color:var(--fg)}
+.subtab.on{color:var(--accent-ink);border-bottom-color:var(--accent)}
+.subtab:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+
+/* ---------- server browser ---------- */
+.srv-toolbar{display:flex;align-items:center;gap:10px;margin-bottom:12px}
+.srv-list{display:flex;flex-direction:column;gap:8px}
+.srv{border:1px solid var(--line);border-radius:var(--radius);background:var(--content-bg2);padding:12px 14px}
+.srv:hover{border-color:var(--accent-ink)}
+.srv-main{min-width:0}
+.srv-name{font-family:var(--nm-font);font-size:15.5px;color:var(--fg)}
+.srv-addr{font-size:11.5px;color:var(--fg-faint);font-family:var(--font-mono);margin-top:1px}
+.srv-desc{font-size:12.5px;color:var(--fg-muted);margin-top:6px;line-height:1.4;
+  display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.srv-badges{display:flex;flex-wrap:wrap;gap:6px;margin-top:9px}
+.sbadge{font-size:11px;letter-spacing:.01em;padding:2px 8px;border-radius:var(--pill-radius);
+  color:var(--fg-muted);border:1px solid var(--line);background:var(--panel)}
+.sbadge b{color:var(--fg);font-variant-numeric:tabular-nums}
+.sbadge.ver{color:var(--accent-ink);border-color:color-mix(in srgb,var(--accent) 40%,transparent);
+  background:color-mix(in srgb,var(--accent) 10%,transparent)}
+.sbadge.warn{color:var(--warn);border-color:color-mix(in srgb,var(--warn) 42%,transparent);
+  background:color-mix(in srgb,var(--warn) 10%,transparent)}
+
 @media (max-width:840px){
   .layout{grid-template-columns:1fr;height:auto}
   .side{flex-direction:row;flex-wrap:wrap;align-items:center;gap:8px}
