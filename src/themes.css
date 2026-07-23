@@ -452,9 +452,11 @@ nav{display:flex;flex-direction:column;margin-top:2px}
 /* ---------- server browser ---------- */
 .srv-toolbar{display:flex;align-items:center;gap:10px;margin-bottom:12px}
 .srv-list{display:flex;flex-direction:column;gap:8px}
-.srv{border:1px solid var(--line);border-radius:var(--radius);background:var(--content-bg2);padding:12px 14px}
+.srv{display:flex;align-items:center;gap:14px;border:1px solid var(--line);border-radius:var(--radius);
+  background:var(--content-bg2);padding:12px 14px}
 .srv:hover{border-color:var(--accent-ink)}
-.srv-main{min-width:0}
+.srv-main{min-width:0;flex:1}
+.srv-acts{flex:none;display:flex;gap:8px}
 .srv-name{font-family:var(--nm-font);font-size:15.5px;color:var(--fg)}
 .srv-addr{font-size:11.5px;color:var(--fg-faint);font-family:var(--font-mono);margin-top:1px}
 .srv-desc{font-size:12.5px;color:var(--fg-muted);margin-top:6px;line-height:1.4;

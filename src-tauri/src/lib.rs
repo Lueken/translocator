@@ -211,17 +211,14 @@ enum PlayResult {
     },
 }
 
-/// The crown jewel: validate -> stamp -> launch -> read-back. Launch params,
-/// env vars, and auto-backup come from the installation's own metadata.
-///
-/// The account is loaded from the backend store here, not passed in from the
-/// webview, so the session key/signature never make the round trip through the
-/// frontend just to launch.
-#[tauri::command]
-async fn play(
+/// Launch the given installation and wait for it to exit. When `connect` is set,
+/// the game is pointed at that server via `--connect` (plus `--pw` if a password
+/// is given), which is how the server browser joins directly.
+async fn play_inner(
     app: AppHandle,
     game_exe: String,
     install_dir: String,
+    connect: Option<(String, Option<String>)>,
 ) -> Result<PlayResult, String> {
     let account = match store::load_account(&app) {
         Some(a) => a,
@@ -263,13 +260,24 @@ async fn play(
     }
     session::stamp_session(&dir, &account)?;
 
-    // 3. Launch with the install's params/env and wait; time the session.
+    // 3. Launch with the install's params/env (plus any --connect target) and
+    //    wait; time the session.
+    let mut extra: Vec<String> = Vec::new();
+    if let Some((address, password)) = &connect {
+        extra.push("--connect".into());
+        extra.push(address.clone());
+        if let Some(pw) = password.as_ref().filter(|p| !p.is_empty()) {
+            extra.push("--pw".into());
+            extra.push(pw.clone());
+        }
+    }
     let started = std::time::Instant::now();
     let exit_code = launch::launch_and_wait(
         &exe,
         &dir,
         Some(&meta.start_params),
         Some(&meta.env_vars),
+        &extra,
     )
     .await?;
     installations::record_play(&dir, started.elapsed().as_secs());
@@ -296,6 +304,42 @@ async fn play(
         rotated,
         account: refreshed.view(),
     })
+}
+
+/// The crown jewel: validate -> stamp -> launch -> read-back. Launch params,
+/// env vars, and auto-backup come from the installation's own metadata.
+///
+/// The account is loaded from the backend store here, not passed in from the
+/// webview, so the session key/signature never make the round trip through the
+/// frontend just to launch.
+#[tauri::command]
+async fn play(app: AppHandle, game_exe: String, install_dir: String) -> Result<PlayResult, String> {
+    play_inner(app, game_exe, install_dir, None).await
+}
+
+/// Launch an installation and connect straight to a server (the server browser's
+/// Join). Same validate/stamp/read-back path as `play`, plus `--connect`.
+#[tauri::command]
+async fn connect_server(
+    app: AppHandle,
+    game_exe: String,
+    install_dir: String,
+    address: String,
+    password: Option<String>,
+) -> Result<PlayResult, String> {
+    play_inner(app, game_exe, install_dir, Some((address, password))).await
+}
+
+/// Add a server to an installation's in-game multiplayer list so it shows up in
+/// the game's own server browser after launch (the "Add to installation" action).
+#[tauri::command]
+fn add_server_to_install(
+    install_dir: String,
+    name: String,
+    address: String,
+    password: Option<String>,
+) -> Result<(), String> {
+    session::add_multiplayer_server(&PathBuf::from(install_dir), &name, &address, password.as_deref())
 }
 
 /// Text-search ModDB (most-downloaded first).
@@ -577,7 +621,9 @@ pub fn run() {
             hub_list_packs,
             hub_pack,
             hub_pack_manifest,
-            list_public_servers
+            list_public_servers,
+            connect_server,
+            add_server_to_install
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

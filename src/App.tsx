@@ -312,6 +312,9 @@ function App() {
   const [serverSearch, setServerSearch] = useState("");
   const [serverVersionFilter, setServerVersionFilter] = useState("");
   const [serverSort, setServerSort] = useState<"players" | "name">("players");
+  const [joinServer, setJoinServer] = useState<PublicServer | null>(null);
+  const [joinInstall, setJoinInstall] = useState("");
+  const [joinPassword, setJoinPassword] = useState("");
 
   // game versions (shared dedup cache)
   const [availableVersions, setAvailableVersions] = useState<AvailableVersion[]>([]);
@@ -599,6 +602,56 @@ function App() {
       setServersError(String(e));
     } finally {
       setServersBusy(false);
+    }
+  }
+  // Open the join dialog for a server, defaulting the installation to one on the
+  // server's game version (falling back to the current target, then the first).
+  function openJoin(s: PublicServer) {
+    const match =
+      installs.find((i) => i.meta.version === s.game_version) ||
+      installs.find((i) => i.path === target) ||
+      installs[0];
+    setJoinServer(s);
+    setJoinInstall(match?.path ?? "");
+    setJoinPassword("");
+  }
+  async function connectServer(s: PublicServer, installDir: string, password: string) {
+    if (!account) return;
+    setJoinServer(null);
+    setBusy(true);
+    const inst = installs.find((i) => i.path === installDir);
+    try {
+      say(`▶ Connecting to ${s.name || s.address} via ${inst?.meta.name ?? installDir} ...`);
+      const res = await invoke<PlayResult>("connect_server", { gameExe, installDir, address: s.address, password: password || null });
+      if (res.status === "needsRelogin") {
+        say(`✗ Session rejected by server (${res.reason}). Re-login needed.`);
+        toast("Session expired. Sign in again on the Account screen.", undefined, false);
+        setAccount(null);
+      } else {
+        say(`■ ${inst?.meta.name ?? "Game"} exited (code ${res.exit_code}).`);
+        await refreshInstalls();
+        if (res.rotated) {
+          setAccount(res.account);
+          say("↻ Game rotated the session; captured the new key.");
+        }
+      }
+    } catch (e) {
+      say(`Connect error: ${e}`);
+      toast(`Could not connect: ${e}`, undefined, false);
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function addServerToInstall(s: PublicServer, installDir: string, password: string) {
+    setJoinServer(null);
+    const inst = installs.find((i) => i.path === installDir);
+    try {
+      await invoke("add_server_to_install", { installDir, name: s.name || s.address, address: s.address, password: password || null });
+      say(`Added ${s.name || s.address} to ${inst?.meta.name ?? installDir}'s server list.`);
+      toast(`Added to ${inst?.meta.name ?? "installation"}; it'll show in the in-game server list`);
+    } catch (e) {
+      say(`Add server error: ${e}`);
+      toast(`Could not add server: ${e}`, undefined, false);
     }
   }
   async function openPack(id: string) {
@@ -1547,6 +1600,9 @@ function App() {
                                   {s.has_password && <span className="sbadge warn">password</span>}
                                 </div>
                               </div>
+                              <div className="srv-acts">
+                                <button className="cta" disabled={busy} onClick={() => openJoin(s)}>Join</button>
+                              </div>
                             </div>
                           ))}
                         </div>
@@ -1969,6 +2025,56 @@ function App() {
           </div>
         </div>
       )}
+
+      {/* join server modal */}
+      {joinServer && (() => {
+        const im = installs.find((i) => i.path === joinInstall)?.meta;
+        const mismatch = !!(im?.version && joinServer.game_version && im.version !== joinServer.game_version);
+        return (
+          <div className="overlay" onClick={() => setJoinServer(null)}>
+            <div className="modal" onClick={(e) => e.stopPropagation()}>
+              <h3>Join {joinServer.name || joinServer.address}</h3>
+              <p className="muted" style={{ marginTop: -4 }}>
+                <span className="tab">{joinServer.address}</span> · VS {joinServer.game_version || "?"} · {joinServer.players}/{joinServer.max_players || "?"} online
+                {joinServer.mod_count > 0 ? ` · ${joinServer.mod_count} mods` : ""}
+              </p>
+              {installs.length === 0 ? (
+                <div className="warn-note">You need an installation to join with. Create one on the Installations screen first.</div>
+              ) : (
+                <>
+                  <label className="field">
+                    <span className="lab">Join with installation <span className="lab-hint">(its mods must match the server)</span></span>
+                    <select value={joinInstall} onChange={(e) => setJoinInstall(e.target.value)}>
+                      {installs.map((i) => (
+                        <option key={i.path} value={i.path}>{i.meta.name}{i.meta.version ? ` (${i.meta.version})` : ""}</option>
+                      ))}
+                    </select>
+                  </label>
+                  {mismatch && (
+                    <div className="warn-note" style={{ marginTop: -4 }}>
+                      This installation is on {im?.version}, the server is on {joinServer.game_version}. They may refuse to connect.
+                    </div>
+                  )}
+                  {joinServer.has_password && (
+                    <label className="field">
+                      <span className="lab">Server password</span>
+                      <input type="password" autoComplete="off" value={joinPassword} onChange={(e) => setJoinPassword(e.target.value)} />
+                    </label>
+                  )}
+                  {!account && <div className="warn-note">Sign in on the Account screen to connect and play.</div>}
+                </>
+              )}
+              <div className="acts" style={{ justifyContent: "space-between" }}>
+                <button className="mini" disabled={!joinInstall} title="Add this server to the installation's in-game multiplayer list" onClick={() => addServerToInstall(joinServer, joinInstall, joinPassword)}>Add to installation</button>
+                <span style={{ display: "flex", gap: 8 }}>
+                  <button className="btn" onClick={() => setJoinServer(null)}>Cancel</button>
+                  <button className="cta" disabled={!account || !joinInstall || busy} onClick={() => connectServer(joinServer, joinInstall, joinPassword)}>Connect &amp; play</button>
+                </span>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* toast stack */}
       <div className="toasts">
