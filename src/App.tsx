@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
+import gearIcon from "./assets/gear.png";
 import "./themes.css";
 
 // ---- Types mirroring the Rust command surface (src-tauri/src/lib.rs) ----
@@ -186,7 +187,7 @@ function Titlebar() {
   const win = getCurrentWindow();
   return (
     <div className="titlebar" data-tauri-drag-region>
-      <Gear size={16} />
+      <img src={gearIcon} className="tb-gear" alt="" data-tauri-drag-region />
       <span className="tb-name" data-tauri-drag-region>Translocator</span>
       <div className="tb-drag" data-tauri-drag-region />
       <button className="winbtn" title="Minimize" onClick={() => win.minimize()}>
@@ -1014,7 +1015,7 @@ function App() {
       <div className="layout">
         <aside className="side">
           <div className="brand">
-            <Gear />
+            <img src={gearIcon} className="brand-gear" alt="" />
             <div>
               <div className="brand-name">Translocator</div>
               <div className="brand-sub">{THEMES.find((t) => t.id === theme)?.name}</div>

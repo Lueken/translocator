@@ -135,6 +135,9 @@ input:focus-visible,select:focus-visible{outline:2px solid var(--accent);outline
 .gear{width:32px;height:32px;color:var(--rail);flex:none;animation:spin 46s linear infinite}
 @media (prefers-reduced-motion:reduce){.gear{animation:none}}
 @keyframes spin{to{transform:rotate(360deg)}}
+/* raster brand mark (the rusted-gears art) */
+.brand-gear{width:34px;height:34px;flex:none;object-fit:contain}
+.tb-gear{width:18px;height:18px;flex:none;object-fit:contain}
 .brand-name{font-family:var(--title-font);font-size:19px;letter-spacing:.02em;line-height:1;color:var(--side-fg)}
 .brand-sub{font-size:10px;letter-spacing:.18em;text-transform:uppercase;color:var(--side-faint);margin-top:5px}
 .hr{height:1px;background:var(--side-line);margin:15px 2px}
