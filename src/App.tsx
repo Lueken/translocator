@@ -76,7 +76,7 @@ type PackSummary = {
   latest_version?: string | null;
   updated?: string | null;
 };
-type PackManifestMod = { modid: number; modidstr: string; name: string; modversion: string; side: string; required: boolean };
+type PackManifestMod = { modid: number; modidstr: string; name: string; modversion: string; side: string; required: boolean; fileid?: number; sha256?: string };
 type PackManifest = {
   manifest_version: number;
   pack: { id: string; name: string; version: string; author: string; summary?: string; description?: string; tags?: string[]; game_version: string; icon?: string };
@@ -109,8 +109,22 @@ type PublicServer = {
   description: string;
 };
 type PrivateServer = { id: string; name: string; address: string; password: string; install_path: string };
+// ---- Curator (src-tauri/src/curator.rs) ----
+type Unresolved = { filename: string; modid: string; version: string; reason: string };
+type CuratorPreview = { manifest: PackManifest; unresolved: Unresolved[]; resolved_count: number };
+type CuratorMeta = {
+  id: string;
+  name: string;
+  version: string;
+  author: string;
+  summary: string;
+  description: string;
+  tags: string;
+  game_version: string;
+  icon: string;
+};
 type Theme = "almanac" | "workshop" | "terminal";
-type View = "installations" | "updates" | "mods" | "worlds" | "servers" | "market" | "pack" | "account" | "settings";
+type View = "installations" | "updates" | "mods" | "worlds" | "servers" | "market" | "pack" | "curator" | "account" | "settings";
 type Toast = { id: number; msg: string; undo?: () => void; ok?: boolean };
 
 // The Hub base URL. Read-only Market/pack calls route through Rust (the webview
@@ -202,6 +216,12 @@ async function copyText(text: string): Promise<boolean> {
     }
   }
 }
+
+const slugify = (s: string) =>
+  s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+const EMPTY_CUR_META: CuratorMeta = {
+  id: "", name: "", version: "1.0.0", author: "", summary: "", description: "", tags: "", game_version: "", icon: "",
+};
 
 // localStorage helpers for per-install ignore/pin lists
 const igKey = (p: string) => `tl-ignores:${p}`;
@@ -318,6 +338,23 @@ function App() {
   const [joinPassword, setJoinPassword] = useState("");
   const [privateServers, setPrivateServers] = useState<PrivateServer[]>([]);
   const [privDraft, setPrivDraft] = useState<PrivateServer | null>(null);
+
+  // ---- Curator ----
+  const [curInstall, setCurInstall] = useState("");
+  const [curMeta, setCurMeta] = useState<CuratorMeta>(() => {
+    try { return { ...EMPTY_CUR_META, ...JSON.parse(localStorage.getItem("tl-curator-meta") || "{}") }; }
+    catch { return EMPTY_CUR_META; }
+  });
+  const [curIdEdited, setCurIdEdited] = useState(() => !!curMeta.id && curMeta.id !== slugify(curMeta.name));
+  const [curLinks, setCurLinks] = useState({ website: "", discord: "", source: "", donate: "" });
+  const [curServer, setCurServer] = useState({ address: "", auto_add: false });
+  const [curConfigs, setCurConfigs] = useState<string[]>([]);
+  const [curSelected, setCurSelected] = useState<Set<string>>(new Set());
+  const [curPreview, setCurPreview] = useState<CuratorPreview | null>(null);
+  const [curBusy, setCurBusy] = useState(false);
+  const [pubBusy, setPubBusy] = useState(false);
+  const [hasToken, setHasToken] = useState(false);
+  const [tokenDraft, setTokenDraft] = useState("");
 
   // game versions (shared dedup cache)
   const [availableVersions, setAvailableVersions] = useState<AvailableVersion[]>([]);
@@ -692,6 +729,113 @@ function App() {
       toast("Server removed");
     } catch (e) {
       say(`Remove server error: ${e}`);
+    }
+  }
+  // ---- Curator ----
+  // Enter the publish flow: default the source install, prefill author/version
+  // from what we know, and list its config files as override candidates.
+  async function openCurator() {
+    const install = curInstall || target || installs[0]?.path || "";
+    setCurInstall(install);
+    setCurPreview(null);
+    setView("curator");
+    setCurMeta((m) => ({
+      ...m,
+      author: m.author || account?.playername || "",
+      game_version: installs.find((i) => i.path === install)?.meta.version || m.game_version,
+    }));
+    try {
+      setHasToken(await invoke<boolean>("has_publisher_token"));
+    } catch { /* non-fatal */ }
+    if (install) {
+      try { setCurConfigs(await invoke<string[]>("list_config_files", { installDir: install })); }
+      catch { setCurConfigs([]); }
+    }
+  }
+  // Switching the source install invalidates the preview and re-lists configs.
+  async function pickCuratorInstall(path: string) {
+    setCurInstall(path);
+    setCurPreview(null);
+    setCurSelected(new Set());
+    const v = installs.find((i) => i.path === path)?.meta.version;
+    if (v) setCurMeta((m) => ({ ...m, game_version: v }));
+    try { setCurConfigs(await invoke<string[]>("list_config_files", { installDir: path })); }
+    catch { setCurConfigs([]); }
+  }
+  function setCurName(name: string) {
+    setCurMeta((m) => ({ ...m, name, id: curIdEdited ? m.id : slugify(name) }));
+  }
+  async function buildManifest() {
+    if (!curInstall) return;
+    setCurBusy(true);
+    setCurPreview(null);
+    try {
+      say(`Curating pack from ${installs.find((i) => i.path === curInstall)?.meta.name ?? curInstall} ...`);
+      const links = { website: curLinks.website.trim() || null, discord: curLinks.discord.trim() || null, source: curLinks.source.trim() || null, donate: curLinks.donate.trim() || null };
+      const hasLinks = Object.values(links).some(Boolean);
+      const preview = await invoke<CuratorPreview>("curate_pack", {
+        installDir: curInstall,
+        pack: {
+          id: curMeta.id.trim(),
+          name: curMeta.name.trim(),
+          version: curMeta.version.trim(),
+          author: curMeta.author.trim(),
+          summary: curMeta.summary.trim(),
+          description: curMeta.description.trim(),
+          tags: curMeta.tags.split(",").map((t) => t.trim()).filter(Boolean),
+          game_version: curMeta.game_version.trim(),
+          min_launcher_version: "",
+          icon: curMeta.icon.trim(),
+        },
+        server: curServer.address.trim() ? { address: curServer.address.trim(), auto_add: curServer.auto_add } : null,
+        links: hasLinks ? links : null,
+        overridePaths: Array.from(curSelected),
+      });
+      setCurPreview(preview);
+      localStorage.setItem("tl-curator-meta", JSON.stringify(curMeta));
+      say(`Manifest built: ${preview.resolved_count} resolved, ${preview.unresolved.length} unresolved.`);
+    } catch (e) {
+      say(`Curate error: ${e}`);
+      toast(`Could not build the manifest: ${e}`, undefined, false);
+    } finally {
+      setCurBusy(false);
+    }
+  }
+  async function publishManifest() {
+    if (!curPreview) return;
+    setPubBusy(true);
+    try {
+      await invoke<string>("publish_pack", { hubUrl: HUB_URL, manifest: curPreview.manifest });
+      say(`✓ Published ${curPreview.manifest.pack.name} v${curPreview.manifest.pack.version}.`);
+      toast(`Published ${curPreview.manifest.pack.name} v${curPreview.manifest.pack.version}`);
+      await loadPacks(true);
+      setView("market");
+    } catch (e) {
+      say(`Publish error: ${e}`);
+      toast(`Publish failed: ${e}`, undefined, false);
+    } finally {
+      setPubBusy(false);
+    }
+  }
+  async function saveToken() {
+    const t = tokenDraft.trim();
+    if (!t) return;
+    try {
+      await invoke("set_publisher_token", { token: t });
+      setTokenDraft("");
+      setHasToken(true);
+      toast("Publisher token saved (sealed to this PC)");
+    } catch (e) {
+      toast(`Could not save token: ${e}`, undefined, false);
+    }
+  }
+  async function forgetToken() {
+    try {
+      await invoke("clear_publisher_token");
+      setHasToken(false);
+      toast("Publisher token forgotten");
+    } catch (e) {
+      toast(`Could not clear token: ${e}`, undefined, false);
     }
   }
   async function openPack(id: string) {
@@ -1273,7 +1417,7 @@ function App() {
           <div className="hr" />
           <nav>
             {NAV.map((n) => {
-              const active = view === n.id || (n.id === "market" && view === "pack");
+              const active = view === n.id || (n.id === "market" && (view === "pack" || view === "curator"));
               return (
                 <button key={n.id} className={"navbtn" + (active ? " active" : "")} onClick={() => setView(n.id)}>
                   <span className="l">{n.label}</span>
@@ -1619,7 +1763,7 @@ function App() {
                           </select>
                           <select value={serverSort} onChange={(e) => setServerSort(e.target.value as "players" | "name")}>
                             <option value="players">Most players</option>
-                            <option value="name">Name (A–Z)</option>
+                            <option value="name">Name (A-Z)</option>
                           </select>
                           <span className="grow" />
                           <span className="counts">{filteredServers.length} server{filteredServers.length === 1 ? "" : "s"}</span>
@@ -1715,6 +1859,7 @@ function App() {
                 <div><div className="eyebrow">Published packs</div><h1 className="title">Modpacks</h1></div>
                 <span className="grow" />
                 <button className="btn" disabled={packsBusy} onClick={() => loadPacks(true)}>{packsBusy ? "Loading…" : "Refresh"}</button>
+                <button className="cta" onClick={openCurator}>Publish a pack</button>
               </div>
               <div className="view">
                 {packsError && (
@@ -1842,6 +1987,162 @@ function App() {
                       ))}
                     </div>
                     <p className="muted" style={{ marginTop: 12 }}>Installing a pack lands in a later build; this is the read-only pack page for now.</p>
+                  </>
+                )}
+              </div>
+            </>
+          )}
+
+          {/* ---------------- CURATOR (publish a pack) ---------------- */}
+          {view === "curator" && (
+            <>
+              <div className="topbar">
+                <button className="btn" onClick={() => setView("market")}>← Modpacks</button>
+                <div style={{ marginLeft: 4 }}>
+                  <div className="eyebrow">Curator</div>
+                  <h1 className="title">Publish a pack</h1>
+                </div>
+              </div>
+              <div className="view" style={{ maxWidth: 720 }}>
+                {installs.length === 0 ? (
+                  <div className="empty">
+                    <Gear size={40} />
+                    <h3>Nothing to publish yet</h3>
+                    <p>A pack is curated from an installation's Mods folder. Set one up first.</p>
+                    <button className="btn" onClick={() => setView("installations")}>Open Installations</button>
+                  </div>
+                ) : (
+                  <>
+                    <label className="field">
+                      <span className="lab">Source installation <span className="lab-hint">(its Mods folder becomes the pack)</span></span>
+                      <select value={curInstall} onChange={(e) => pickCuratorInstall(e.target.value)}>
+                        {installs.map((i) => (
+                          <option key={i.path} value={i.path}>{i.meta.name}{i.meta.version ? ` (${i.meta.version})` : ""} · {i.mod_count} mods</option>
+                        ))}
+                      </select>
+                    </label>
+
+                    <div className="cur-grid">
+                      <label className="field"><span className="lab">Pack name<span className="req">*</span></span>
+                        <input value={curMeta.name} placeholder="The Quire" onChange={(e) => setCurName(e.target.value)} /></label>
+                      <label className="field"><span className="lab">Pack id<span className="req">*</span> <span className="lab-hint">(permanent slug)</span></span>
+                        <input value={curMeta.id} placeholder="the-quire" onChange={(e) => { setCurIdEdited(true); setCurMeta({ ...curMeta, id: slugify(e.target.value) }); }} /></label>
+                      <label className="field"><span className="lab">Pack version<span className="req">*</span></span>
+                        <input value={curMeta.version} placeholder="1.0.0" onChange={(e) => setCurMeta({ ...curMeta, version: e.target.value })} /></label>
+                      <label className="field"><span className="lab">Author</span>
+                        <input value={curMeta.author} placeholder="Venah" onChange={(e) => setCurMeta({ ...curMeta, author: e.target.value })} /></label>
+                      <label className="field"><span className="lab">Game version<span className="req">*</span></span>
+                        <input value={curMeta.game_version} placeholder="1.21.1" onChange={(e) => setCurMeta({ ...curMeta, game_version: e.target.value })} /></label>
+                      <label className="field"><span className="lab">Tags <span className="lab-hint">(comma-separated)</span></span>
+                        <input value={curMeta.tags} placeholder="survival, hardcore, rp" onChange={(e) => setCurMeta({ ...curMeta, tags: e.target.value })} /></label>
+                    </div>
+                    <label className="field"><span className="lab">Summary <span className="lab-hint">(one line, shown on the pack card)</span></span>
+                      <input value={curMeta.summary} onChange={(e) => setCurMeta({ ...curMeta, summary: e.target.value })} /></label>
+                    <label className="field"><span className="lab">Description</span>
+                      <textarea rows={4} value={curMeta.description} onChange={(e) => setCurMeta({ ...curMeta, description: e.target.value })} /></label>
+
+                    <div className="cur-grid">
+                      <label className="field"><span className="lab">Server address <span className="lab-hint">(optional)</span></span>
+                        <input value={curServer.address} placeholder="play.example.com:42420" onChange={(e) => setCurServer({ ...curServer, address: e.target.value })} /></label>
+                      <label className="field row-check" style={{ alignSelf: "end" }}>
+                        <input type="checkbox" checked={curServer.auto_add} disabled={!curServer.address.trim()} onChange={(e) => setCurServer({ ...curServer, auto_add: e.target.checked })} />
+                        <span>Add to the in-game server list on install</span>
+                      </label>
+                      <label className="field"><span className="lab">Website</span>
+                        <input value={curLinks.website} onChange={(e) => setCurLinks({ ...curLinks, website: e.target.value })} /></label>
+                      <label className="field"><span className="lab">Discord</span>
+                        <input value={curLinks.discord} onChange={(e) => setCurLinks({ ...curLinks, discord: e.target.value })} /></label>
+                      <label className="field"><span className="lab">Source <span className="lab-hint">(repo, if public)</span></span>
+                        <input value={curLinks.source} onChange={(e) => setCurLinks({ ...curLinks, source: e.target.value })} /></label>
+                      <label className="field"><span className="lab">Donate <span className="lab-hint">(tips go straight to you)</span></span>
+                        <input value={curLinks.donate} onChange={(e) => setCurLinks({ ...curLinks, donate: e.target.value })} /></label>
+                    </div>
+
+                    {curConfigs.length > 0 && (
+                      <div className="field">
+                        <span className="lab">Config overrides <span className="lab-hint">(shipped with the pack, applied on install)</span></span>
+                        <div className="cur-configs">
+                          {curConfigs.map((c) => (
+                            <label className="row-check" key={c}>
+                              <input type="checkbox" checked={curSelected.has(c)} onChange={(e) => {
+                                const n = new Set(curSelected);
+                                if (e.target.checked) n.add(c); else n.delete(c);
+                                setCurSelected(n);
+                              }} />
+                              <span className="tab" style={{ fontSize: 12 }}>{c}</span>
+                            </label>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    <div style={{ display: "flex", gap: 8, alignItems: "center", margin: "6px 0 14px" }}>
+                      <button
+                        className="cta"
+                        disabled={curBusy || !curInstall || !curMeta.id.trim() || !curMeta.name.trim() || !curMeta.version.trim() || !curMeta.game_version.trim()}
+                        onClick={buildManifest}
+                      >
+                        {curBusy ? "Resolving against ModDB…" : curPreview ? "Rebuild manifest" : "Build manifest"}
+                      </button>
+                      {!curMeta.id.trim() && <span className="muted">Name, id, version, and game version are required.</span>}
+                    </div>
+                    {curBusy && (
+                      <div className="checking" style={{ padding: "0 0 10px" }}>
+                        <div className="prog-n tab">Hashing mods and matching each one to a ModDB release…</div>
+                        <div className="prog"><i className="indet" style={{ width: "40%" }} /></div>
+                      </div>
+                    )}
+
+                    {curPreview && (
+                      <>
+                        {curPreview.unresolved.length > 0 && (
+                          <div className="warn-note" style={{ marginBottom: 12 }}>
+                            <b>{curPreview.unresolved.length} mod{curPreview.unresolved.length === 1 ? "" : "s"} can't be pinned.</b> Packs are ModDB-only, so these stay out of the manifest until fixed:
+                            <ul className="cur-unres">
+                              {curPreview.unresolved.map((u) => (
+                                <li key={u.filename}><span className="tab">{u.modid}@{u.version}</span>: {u.reason}</li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+                        <div className="pack-mods-hd">
+                          <h3>{curPreview.resolved_count} mod{curPreview.resolved_count === 1 ? "" : "s"} pinned</h3>
+                          {curSelected.size > 0 && <span className="muted">· {curSelected.size} config override{curSelected.size === 1 ? "" : "s"}</span>}
+                        </div>
+                        <div className="list" style={{ marginBottom: 14, maxHeight: 260, overflowY: "auto" }}>
+                          {curPreview.manifest.mods.map((m) => (
+                            <div className="li" key={m.modidstr}>
+                              <span><span className="nm">{m.name}</span> <span className="meta">{m.modidstr} · {m.side}</span></span>
+                              <span style={{ display: "flex", gap: 10, alignItems: "baseline" }}>
+                                <span className="tab">{m.modversion}</span>
+                                {m.sha256 && <span className="meta tab" title={m.sha256}>{m.sha256.slice(0, 10)}…</span>}
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+
+                        <div className="field">
+                          <span className="lab">Publisher token</span>
+                          {hasToken ? (
+                            <p className="muted" style={{ display: "flex", gap: 10, alignItems: "center", margin: 0 }}>
+                              <span className="dotv" style={{ background: "var(--ok)" }} />Token saved, sealed to this PC.
+                              <button className="link" onClick={forgetToken}>Forget</button>
+                            </p>
+                          ) : (
+                            <div className="path-row">
+                              <input type="password" autoComplete="off" placeholder="Paste your Hub publisher token" value={tokenDraft} onChange={(e) => setTokenDraft(e.target.value)} />
+                              <button className="btn" type="button" disabled={!tokenDraft.trim()} onClick={saveToken}>Save</button>
+                            </div>
+                          )}
+                        </div>
+                        <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+                          <button className="cta" disabled={pubBusy || !hasToken || curPreview.resolved_count === 0} onClick={publishManifest}>
+                            {pubBusy ? "Publishing…" : `Publish v${curPreview.manifest.pack.version} to the Hub`}
+                          </button>
+                          <span className="muted">Players on this pack update only when you publish a new version.</span>
+                        </div>
+                      </>
+                    )}
                   </>
                 )}
               </div>
@@ -2007,7 +2308,7 @@ function App() {
               <span>Back up the whole installation before playing <span className="muted">(can be slow for large worlds)</span></span>
             </label>
             <div style={{ display: "flex", gap: 18, flexWrap: "wrap" }}>
-              <label className="field" style={{ flex: "0 0 auto" }}><span className="lab">Backup compression (0–9)</span>
+              <label className="field" style={{ flex: "0 0 auto" }}><span className="lab">Backup compression (0-9)</span>
                 <input type="number" min={0} max={9} style={{ width: 80 }} value={draft.compression}
                   onChange={(e) => setDraft({ ...draft, compression: Math.max(0, Math.min(9, Number(e.target.value) || 0)) })} /></label>
               <label className="field" style={{ flex: "0 0 auto" }}><span className="lab">Keep last N backups</span>
@@ -2168,7 +2469,7 @@ function App() {
               <input value={privDraft.address} placeholder="123.45.67.89:42420" onChange={(e) => setPrivDraft({ ...privDraft, address: e.target.value })} /></label>
             <label className="field"><span className="lab">Installation to join with</span>
               <select value={privDraft.install_path} onChange={(e) => setPrivDraft({ ...privDraft, install_path: e.target.value })}>
-                <option value="">— none yet —</option>
+                <option value="">none yet</option>
                 {installs.map((i) => (<option key={i.path} value={i.path}>{i.meta.name}{i.meta.version ? ` (${i.meta.version})` : ""}</option>))}
               </select></label>
             <label className="field"><span className="lab">Password <span className="lab-hint">(optional, stored sealed on this PC)</span></span>

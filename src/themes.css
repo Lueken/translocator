@@ -105,10 +105,11 @@ button{font-family:var(--font-ui);font-size:13px;cursor:pointer;color:var(--fg)}
 .mini:disabled{opacity:.42;cursor:not-allowed}
 .link{background:none;border:none;color:var(--accent-ink);font-size:12px;font-weight:600;padding:0}
 .link:hover{text-decoration:underline}
-input,select{font-family:var(--font-ui);font-size:13px;color:var(--fg);background:var(--content-bg2);
+input,select,textarea{font-family:var(--font-ui);font-size:13px;color:var(--fg);background:var(--content-bg2);
   border:1px solid var(--line);border-radius:calc(var(--radius) - 1px);padding:7px 10px}
 select option{background:var(--content-bg2);color:var(--fg)}
-input:focus-visible,select:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+input:focus-visible,select:focus-visible,textarea:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+textarea{resize:vertical;min-height:64px}
 
 /* ---------- shell + titlebar ---------- */
 .shell{position:relative;width:100vw;height:100vh;overflow:hidden}
@@ -207,6 +208,7 @@ nav{display:flex;flex-direction:column;margin-top:2px}
 .field .lab{font-size:12px;letter-spacing:.04em;color:var(--fg-muted);display:block;margin-bottom:5px;text-transform:uppercase}
 .field input{width:100%}
 .lab-hint{text-transform:none;letter-spacing:0;color:var(--fg-faint);font-weight:400}
+.req{color:var(--accent-ink);margin-left:2px}
 .path-row{display:flex;gap:8px;align-items:stretch}
 .path-row input{flex:1;min-width:0}
 .path-row .btn{flex:none;white-space:nowrap}
@@ -440,6 +442,14 @@ nav{display:flex;flex-direction:column;margin-top:2px}
   padding:9px 12px;margin:0 0 14px;font-size:13px;color:var(--fg-muted)}
 .pack-mods-hd{display:flex;align-items:baseline;gap:8px;margin:4px 0 8px}
 .pack-mods-hd h3{font-family:var(--title-font);font-size:16px;margin:0}
+
+/* ---------- curator ---------- */
+.cur-grid{display:grid;grid-template-columns:1fr 1fr;column-gap:16px}
+.field textarea{width:100%}
+.cur-configs{display:flex;flex-direction:column;gap:6px;border:1px solid var(--line);border-radius:var(--radius);
+  background:var(--content-bg2);padding:10px 12px;max-height:170px;overflow-y:auto}
+.cur-unres{margin:6px 0 0;padding-left:18px}
+.cur-unres li{margin-top:3px}
 
 /* ---------- sub-tabs (servers) ---------- */
 .subtabs{display:flex;gap:2px;padding:10px 24px 0}
