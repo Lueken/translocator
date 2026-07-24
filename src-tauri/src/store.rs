@@ -80,6 +80,15 @@ pub fn load_sealed(app: &AppHandle, filename: &str) -> Option<Vec<u8>> {
     unseal(&sealed).ok()
 }
 
+/// Delete a sealed file. No-op if it doesn't exist.
+pub fn remove_sealed(app: &AppHandle, filename: &str) -> Result<(), String> {
+    let p = data_dir(app)?.join(filename);
+    if p.exists() {
+        std::fs::remove_file(p).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 pub fn clear_account(app: &AppHandle) -> Result<(), String> {
     let dir = data_dir(app)?;
     for name in [SEALED_FILE, LEGACY_PLAINTEXT] {

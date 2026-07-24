@@ -495,9 +495,43 @@ async fn curate_pack(
     curator::build_manifest(&PathBuf::from(install_dir), pack, links, server, override_paths).await
 }
 
-/// Publish a built manifest to the Hub (authed with the publisher token).
+// Publisher token, DPAPI-sealed like the account. The webview only ever learns
+// whether a token exists; the value itself never crosses into the frontend.
+const PUBLISHER_TOKEN_FILE: &str = "publisher.dat";
+
+/// Save the Hub publisher token (sealed at rest).
 #[tauri::command]
-async fn publish_pack(hub_url: String, token: String, manifest: manifest::Manifest) -> Result<String, String> {
+fn set_publisher_token(app: AppHandle, token: String) -> Result<(), String> {
+    let t = token.trim();
+    if t.is_empty() {
+        return Err("token is empty".into());
+    }
+    store::save_sealed(&app, PUBLISHER_TOKEN_FILE, t.as_bytes())
+}
+
+/// Whether a publisher token is saved on this machine.
+#[tauri::command]
+fn has_publisher_token(app: AppHandle) -> bool {
+    store::load_sealed(&app, PUBLISHER_TOKEN_FILE)
+        .map(|b| !b.is_empty())
+        .unwrap_or(false)
+}
+
+/// Forget the saved publisher token.
+#[tauri::command]
+fn clear_publisher_token(app: AppHandle) -> Result<(), String> {
+    store::remove_sealed(&app, PUBLISHER_TOKEN_FILE)
+}
+
+/// Publish a built manifest to the Hub. The publisher token is loaded from the
+/// sealed store here, never passed in from the webview.
+#[tauri::command]
+async fn publish_pack(app: AppHandle, hub_url: String, manifest: manifest::Manifest) -> Result<String, String> {
+    let token = store::load_sealed(&app, PUBLISHER_TOKEN_FILE)
+        .and_then(|b| String::from_utf8(b).ok())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .ok_or("No publisher token saved. Add it on the Publish screen first.")?;
     curator::publish(&hub_url, &token, &manifest).await
 }
 
@@ -636,6 +670,9 @@ pub fn run() {
             curate_pack,
             publish_pack,
             list_config_files,
+            set_publisher_token,
+            has_publisher_token,
+            clear_publisher_token,
             hub_list_packs,
             hub_pack,
             hub_pack_manifest,
