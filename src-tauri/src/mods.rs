@@ -121,6 +121,17 @@ pub async fn search(text: &str) -> Result<Vec<ModSummary>, String> {
 
 // ---------------------------------------------------------------- detail
 
+/// `#[serde(default)]` only covers a MISSING key; ModDB also sends explicit
+/// `null`s (old releases have `"changelog": null`, file-less releases have
+/// `"fileid": null`). This treats null exactly like a missing key.
+fn null_default<'de, D, T>(d: D) -> Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de> + Default,
+{
+    Ok(Option::<T>::deserialize(d)?.unwrap_or_default())
+}
+
 #[derive(Deserialize)]
 struct FullModResponse {
     #[serde(rename = "mod")]
@@ -129,45 +140,48 @@ struct FullModResponse {
 
 #[derive(Deserialize)]
 struct FullModDetail {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_default")]
     modid: u64,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_default")]
     name: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_default")]
     assetid: u64,
     /// Which side loads the mod: "client" | "server" | "both" (VS may say
     /// "universal"). Used to build a pack's per-mod `side`.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_default")]
     side: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_default")]
     text: String,
     // Present once upstream exposes it (anegostudios/vsmoddb#143); harmless until then.
     #[serde(default)]
     donateurl: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_default")]
     releases: Vec<FullRelease>,
 }
 
 /// A ModDB release. `tags` are the compatible game versions; `changelog` is the
-/// per-release notes (which the existing launchers never surface).
+/// per-release notes (which the existing launchers never surface). Every field
+/// is null-tolerant: one broken historical release must never sink the whole
+/// mod's parse.
 #[derive(Deserialize, Clone)]
 pub struct FullRelease {
+    #[serde(default, deserialize_with = "null_default")]
     pub mainfile: String,
-    /// The download pin: `/download?fileid=<fileid>`.
-    #[serde(default)]
+    /// The download pin: `/download?fileid=<fileid>`. 0 = release has no file.
+    #[serde(default, deserialize_with = "null_default")]
     pub fileid: u64,
     /// The release record id (links to its changelog).
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_default")]
     pub releaseid: u64,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_default")]
     pub filename: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_default")]
     pub modversion: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_default")]
     pub tags: Vec<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_default")]
     pub changelog: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_default")]
     pub created: String,
 }
 
@@ -181,17 +195,40 @@ pub struct ModFull {
     pub releases: Vec<FullRelease>,
 }
 
-/// Fetch a mod's full detail (releases newest-first). Shared by install, the
-/// update view, and donation lookup.
-pub async fn fetch_full(client: &reqwest::Client, modidstr: &str) -> Result<ModFull, String> {
-    let r: FullModResponse = client
+/// Why a mod lookup failed: the mod genuinely isn't on ModDB, or the request
+/// itself failed (network, rate limit, HTML error page). Callers that report
+/// "not on ModDB" to users must only do so on `NotFound` - anything else is
+/// retryable and means nothing about the mod.
+pub enum FetchErr {
+    NotFound,
+    Other(String),
+}
+
+/// Fetch a mod's full detail (releases newest-first), distinguishing a real
+/// ModDB 404 from transient failures. ModDB answers HTTP 200 with an internal
+/// `statuscode` field, so the body is inspected before typing it.
+pub async fn fetch_full_checked(client: &reqwest::Client, modidstr: &str) -> Result<ModFull, FetchErr> {
+    let resp = client
         .get(format!("{MODDB}/mod/{modidstr}"))
         .send()
         .await
-        .map_err(|e| format!("mod detail failed: {e}"))?
-        .json()
+        .map_err(|e| FetchErr::Other(format!("request failed: {e}")))?;
+    let http = resp.status();
+    let text = resp
+        .text()
         .await
-        .map_err(|e| format!("mod detail parse ({modidstr}): {e}"))?;
+        .map_err(|e| FetchErr::Other(format!("read failed: {e}")))?;
+    let v: serde_json::Value = serde_json::from_str(&text)
+        .map_err(|_| FetchErr::Other(format!("non-JSON response (HTTP {http})")))?;
+    let code = v.get("statuscode");
+    let is_404 = code
+        .map(|c| c.as_str() == Some("404") || c.as_i64() == Some(404))
+        .unwrap_or(false);
+    if is_404 {
+        return Err(FetchErr::NotFound);
+    }
+    let r: FullModResponse = serde_json::from_value(v)
+        .map_err(|e| FetchErr::Other(format!("mod detail parse ({modidstr}): {e}")))?;
     let d = r.mod_detail;
     Ok(ModFull {
         modid: d.modid,
@@ -201,6 +238,15 @@ pub async fn fetch_full(client: &reqwest::Client, modidstr: &str) -> Result<ModF
         text: d.text,
         donateurl: d.donateurl,
         releases: d.releases,
+    })
+}
+
+/// Fetch a mod's full detail (releases newest-first). Shared by install, the
+/// update view, and donation lookup.
+pub async fn fetch_full(client: &reqwest::Client, modidstr: &str) -> Result<ModFull, String> {
+    fetch_full_checked(client, modidstr).await.map_err(|e| match e {
+        FetchErr::NotFound => format!("{modidstr} not found on ModDB"),
+        FetchErr::Other(msg) => msg,
     })
 }
 

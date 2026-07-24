@@ -59,21 +59,41 @@ async fn resolve_one(
     filename: String,
     info: deps::ModInfo,
 ) -> Outcome {
-    let full = match mods::fetch_full(client, &info.modid).await {
-        Ok(f) => f,
-        Err(_) => {
-            return Outcome::Unresolved(Unresolved {
-                filename,
-                modid: info.modid,
-                version: info.version,
-                reason: "not found on ModDB (post it there first)".into(),
-            });
+    // A real ModDB 404 means "not posted there". Anything else (rate limit,
+    // network hiccup, HTML error page) is retried with backoff and, if it still
+    // fails, reported as a lookup failure - NOT as "not on ModDB".
+    let mut attempt: u32 = 0;
+    let full = loop {
+        match mods::fetch_full_checked(client, &info.modid).await {
+            Ok(f) => break f,
+            Err(mods::FetchErr::NotFound) => {
+                return Outcome::Unresolved(Unresolved {
+                    filename,
+                    modid: info.modid,
+                    version: info.version,
+                    reason: "not found on ModDB (post it there first)".into(),
+                });
+            }
+            Err(mods::FetchErr::Other(e)) => {
+                if attempt >= 3 {
+                    return Outcome::Unresolved(Unresolved {
+                        filename,
+                        modid: info.modid,
+                        version: info.version,
+                        reason: format!("ModDB lookup failed after retries ({e}); rebuild to try again"),
+                    });
+                }
+                attempt += 1;
+                tokio::time::sleep(std::time::Duration::from_millis(500 * u64::from(attempt))).await;
+            }
         }
     };
+    // Version match must also carry a real file: ModDB has file-less release
+    // records (fileid null -> 0), which can't be pinned or downloaded.
     let Some(rel) = full
         .releases
         .iter()
-        .find(|r| r.modversion.eq_ignore_ascii_case(&info.version))
+        .find(|r| r.modversion.eq_ignore_ascii_case(&info.version) && r.fileid > 0)
     else {
         let seen: Vec<&str> = full.releases.iter().map(|r| r.modversion.as_str()).take(4).collect();
         return Outcome::Unresolved(Unresolved {
@@ -148,7 +168,9 @@ pub async fn build_manifest(
         let mods_dir = mods_dir.clone();
         async move { resolve_one(&client, &mods_dir, filename, info).await }
     }))
-    .buffer_unordered(12)
+    // Modest concurrency: 200 near-simultaneous lookups trip ModDB's rate
+    // limiting, which is what the retry above then has to absorb.
+    .buffer_unordered(5)
     .collect()
     .await;
 
