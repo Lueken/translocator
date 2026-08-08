@@ -122,7 +122,9 @@ type CuratorMeta = {
   tags: string;
   game_version: string;
   icon: string;
+  strict: boolean;
 };
+type PublisherStatus = { signed_in: boolean; playername: string | null; has_key: boolean; fingerprint: string | null };
 type Theme = "almanac" | "workshop" | "terminal";
 type View = "installations" | "updates" | "mods" | "worlds" | "servers" | "market" | "pack" | "curator" | "account" | "settings";
 type Toast = { id: number; msg: string; undo?: () => void; ok?: boolean };
@@ -220,7 +222,7 @@ async function copyText(text: string): Promise<boolean> {
 const slugify = (s: string) =>
   s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
 const EMPTY_CUR_META: CuratorMeta = {
-  id: "", name: "", version: "1.0.0", author: "", summary: "", description: "", tags: "", game_version: "", icon: "",
+  id: "", name: "", version: "1.0.0", author: "", summary: "", description: "", tags: "", game_version: "", icon: "", strict: false,
 };
 
 // localStorage helpers for per-install ignore/pin lists
@@ -353,8 +355,8 @@ function App() {
   const [curPreview, setCurPreview] = useState<CuratorPreview | null>(null);
   const [curBusy, setCurBusy] = useState(false);
   const [pubBusy, setPubBusy] = useState(false);
-  const [hasToken, setHasToken] = useState(false);
-  const [tokenDraft, setTokenDraft] = useState("");
+  const [pubStatus, setPubStatus] = useState<PublisherStatus | null>(null);
+  const [registering, setRegistering] = useState(false);
 
   // game versions (shared dedup cache)
   const [availableVersions, setAvailableVersions] = useState<AvailableVersion[]>([]);
@@ -745,7 +747,7 @@ function App() {
       game_version: installs.find((i) => i.path === install)?.meta.version || m.game_version,
     }));
     try {
-      setHasToken(await invoke<boolean>("has_publisher_token"));
+      setPubStatus(await invoke<PublisherStatus>("publisher_status"));
     } catch { /* non-fatal */ }
     if (install) {
       try { setCurConfigs(await invoke<string[]>("list_config_files", { installDir: install })); }
@@ -785,6 +787,7 @@ function App() {
           tags: curMeta.tags.split(",").map((t) => t.trim()).filter(Boolean),
           game_version: curMeta.game_version.trim(),
           min_launcher_version: "",
+          strict: curMeta.strict,
           icon: curMeta.icon.trim(),
         },
         server: curServer.address.trim() ? { address: curServer.address.trim(), auto_add: curServer.auto_add } : null,
@@ -812,30 +815,32 @@ function App() {
       setView("market");
     } catch (e) {
       say(`Publish error: ${e}`);
-      toast(`Publish failed: ${e}`, undefined, false);
+      const msg = String(e);
+      if (msg.includes("unknown publisher uid") || msg.includes("no active signing keys")) {
+        toast("This device isn't registered yet. Click Register this device, then publish again.", undefined, false);
+      } else {
+        toast(`Publish failed: ${e}`, undefined, false);
+      }
     } finally {
       setPubBusy(false);
     }
   }
-  async function saveToken() {
-    const t = tokenDraft.trim();
-    if (!t) return;
+  // Bind this machine's signing key to the signed-in VS account (idempotent:
+  // the Hub re-proves the account and re-binds the same key harmlessly).
+  async function registerDevice() {
+    setRegistering(true);
     try {
-      await invoke("set_publisher_token", { token: t });
-      setTokenDraft("");
-      setHasToken(true);
-      toast("Publisher token saved (sealed to this PC)");
+      const res = await invoke<{ publisher?: { playername?: string }; key_fingerprint?: string }>(
+        "register_publisher", { hubUrl: HUB_URL }
+      );
+      setPubStatus(await invoke<PublisherStatus>("publisher_status"));
+      toast(`This device can now publish as ${res.publisher?.playername ?? account?.playername ?? "you"}`);
+      say(`Registered signing key ${res.key_fingerprint ?? ""} with the Hub.`);
     } catch (e) {
-      toast(`Could not save token: ${e}`, undefined, false);
-    }
-  }
-  async function forgetToken() {
-    try {
-      await invoke("clear_publisher_token");
-      setHasToken(false);
-      toast("Publisher token forgotten");
-    } catch (e) {
-      toast(`Could not clear token: ${e}`, undefined, false);
+      say(`Device registration error: ${e}`);
+      toast(`Registration failed: ${e}`, undefined, false);
+    } finally {
+      setRegistering(false);
     }
   }
   async function openPack(id: string) {
@@ -2048,6 +2053,10 @@ function App() {
                         <input type="checkbox" checked={curServer.auto_add} disabled={!curServer.address.trim()} onChange={(e) => setCurServer({ ...curServer, auto_add: e.target.checked })} />
                         <span>Add to the in-game server list on install</span>
                       </label>
+                      <label className="field row-check">
+                        <input type="checkbox" checked={curMeta.strict} onChange={(e) => setCurMeta({ ...curMeta, strict: e.target.checked })} />
+                        <span>Self-contained pack <span className="muted">(the pack defines the whole Mods folder; no user-added mods)</span></span>
+                      </label>
                       <label className="field"><span className="lab">Website</span>
                         <input value={curLinks.website} onChange={(e) => setCurLinks({ ...curLinks, website: e.target.value })} /></label>
                       <label className="field"><span className="lab">Discord</span>
@@ -2122,24 +2131,30 @@ function App() {
                         </div>
 
                         <div className="field">
-                          <span className="lab">Publisher token</span>
-                          {hasToken ? (
-                            <p className="muted" style={{ display: "flex", gap: 10, alignItems: "center", margin: 0 }}>
-                              <span className="dotv" style={{ background: "var(--ok)" }} />Token saved, sealed to this PC.
-                              <button className="link" onClick={forgetToken}>Forget</button>
+                          <span className="lab">Publishing as</span>
+                          {!pubStatus?.signed_in ? (
+                            <p className="muted" style={{ margin: 0 }}>
+                              Not signed in. Publishing is tied to your Vintage Story account; sign in on the Account screen first.
                             </p>
                           ) : (
-                            <div className="path-row">
-                              <input type="password" autoComplete="off" placeholder="Paste your Hub publisher token" value={tokenDraft} onChange={(e) => setTokenDraft(e.target.value)} />
-                              <button className="btn" type="button" disabled={!tokenDraft.trim()} onClick={saveToken}>Save</button>
-                            </div>
+                            <p className="muted" style={{ display: "flex", gap: 10, alignItems: "center", margin: 0, flexWrap: "wrap" }}>
+                              <span className="dotv" style={{ background: "var(--ok)" }} />
+                              <b style={{ color: "var(--fg)" }}>{pubStatus.playername}</b>
+                              {pubStatus.has_key && pubStatus.fingerprint && (
+                                <span className="tab" title="This machine's signing key">{pubStatus.fingerprint.slice(0, 18)}…</span>
+                              )}
+                              <button className="link" disabled={registering} onClick={registerDevice}
+                                title="Bind this machine's signing key to your VS account on the Hub (needed once per machine)">
+                                {registering ? "Registering…" : pubStatus.has_key ? "Re-register this device" : "Register this device"}
+                              </button>
+                            </p>
                           )}
                         </div>
                         <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-                          <button className="cta" disabled={pubBusy || !hasToken || curPreview.resolved_count === 0} onClick={publishManifest}>
+                          <button className="cta" disabled={pubBusy || !pubStatus?.signed_in || curPreview.resolved_count === 0} onClick={publishManifest}>
                             {pubBusy ? "Publishing…" : `Publish v${curPreview.manifest.pack.version} to the Hub`}
                           </button>
-                          <span className="muted">Players on this pack update only when you publish a new version.</span>
+                          <span className="muted">Signed with this device's key as your VS account. Players update only when you publish a new version.</span>
                         </div>
                       </>
                     )}

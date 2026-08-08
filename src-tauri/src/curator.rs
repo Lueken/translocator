@@ -205,14 +205,28 @@ pub async fn build_manifest(
     })
 }
 
-/// Publish a built manifest to the Hub. Returns the Hub's response body.
-pub async fn publish(hub_url: &str, token: &str, manifest: &Manifest) -> Result<String, String> {
+/// Publish a signed manifest to the Hub. The envelope is
+/// `{ manifest, signature, uid }`: the Hub rebuilds the canonical payload
+/// (which binds the uid) and verifies the signature against one of that VS
+/// account's registered device keys. The signature IS the auth; there is no
+/// token. `manifest_value` must be the exact JSON value the payload was
+/// derived from, so Hub and launcher canonicalize identical bytes.
+pub async fn publish(
+    hub_url: &str,
+    pack_id: &str,
+    manifest_value: &serde_json::Value,
+    signature: &str,
+    uid: &str,
+) -> Result<String, String> {
     let base = hub_url.trim_end_matches('/');
-    let url = format!("{base}/api/packs/{}/versions", manifest.pack.id);
+    let url = format!("{base}/api/packs/{pack_id}/versions");
     let resp = reqwest::Client::new()
         .post(&url)
-        .bearer_auth(token)
-        .json(manifest)
+        .json(&serde_json::json!({
+            "manifest": manifest_value,
+            "signature": signature,
+            "uid": uid,
+        }))
         .send()
         .await
         .map_err(|e| format!("publish request failed: {e}"))?;

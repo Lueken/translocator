@@ -28,6 +28,11 @@ pub struct ManifestPack {
     pub tags: Vec<String>,
     pub game_version: String,
     pub min_launcher_version: String,
+    /// Self-contained pack: the manifest defines the entire Mods folder.
+    /// Spec default is false; signed into the pack payload, so omitted-when-
+    /// false keeps the wire form and the signature consistent.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub strict: bool,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub icon: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -77,6 +82,10 @@ pub struct ManifestOverride {
 
 fn default_encoding() -> String {
     "utf8".into()
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 #[derive(Serialize, Deserialize, Clone)]

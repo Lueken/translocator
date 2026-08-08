@@ -18,6 +18,7 @@ mod models;
 mod mods;
 mod servers;
 mod session;
+mod signing;
 mod store;
 mod updates;
 mod versions;
@@ -495,44 +496,99 @@ async fn curate_pack(
     curator::build_manifest(&PathBuf::from(install_dir), pack, links, server, override_paths).await
 }
 
-// Publisher token, DPAPI-sealed like the account. The webview only ever learns
-// whether a token exists; the value itself never crosses into the frontend.
-const PUBLISHER_TOKEN_FILE: &str = "publisher.dat";
+// ---- Publisher identity: the VS account itself. ----
+// No tokens, no operator-maintained keys. A DPAPI-sealed Ed25519 device key
+// signs on behalf of the signed-in VS account; the Hub binds key to account
+// once, via a single-use mptoken validated by VS's own auth server.
 
-/// Save the Hub publisher token (sealed at rest).
+#[derive(serde::Serialize)]
+struct PublisherStatus {
+    signed_in: bool,
+    playername: Option<String>,
+    has_key: bool,
+    fingerprint: Option<String>,
+}
+
+/// What the curator UI needs to render the publish section: who we'd publish
+/// as, and whether this machine has a signing key yet. Never creates a key.
 #[tauri::command]
-fn set_publisher_token(app: AppHandle, token: String) -> Result<(), String> {
-    let t = token.trim();
-    if t.is_empty() {
-        return Err("token is empty".into());
+fn publisher_status(app: AppHandle) -> PublisherStatus {
+    // The pre-VS-account bearer token is obsolete; scrub it if this machine
+    // still has one from the earlier flow.
+    let _ = store::remove_sealed(&app, "publisher.dat");
+    let account = store::load_account(&app);
+    let has_key = signing::has_key(&app);
+    let fingerprint = if has_key {
+        signing::load_or_create_key(&app).ok().map(|k| signing::fingerprint(&k))
+    } else {
+        None
+    };
+    PublisherStatus {
+        signed_in: account.is_some(),
+        playername: account.map(|a| a.playername),
+        has_key,
+        fingerprint,
     }
-    store::save_sealed(&app, PUBLISHER_TOKEN_FILE, t.as_bytes())
 }
 
-/// Whether a publisher token is saved on this machine.
+/// Register this device's signing key to the signed-in VS account:
+/// Hub challenge -> single-use mptoken from VS's auth server (using the stored
+/// session, backend-side only) -> Hub verifies with VS and binds the key.
+/// Idempotent; safe to call before every first publish from a machine.
 #[tauri::command]
-fn has_publisher_token(app: AppHandle) -> bool {
-    store::load_sealed(&app, PUBLISHER_TOKEN_FILE)
-        .map(|b| !b.is_empty())
-        .unwrap_or(false)
+async fn register_publisher(app: AppHandle, hub_url: String) -> Result<serde_json::Value, String> {
+    let account = store::load_account(&app).ok_or("Sign in to your Vintage Story account first.")?;
+    let key = signing::load_or_create_key(&app)?;
+    let base = hub_url.trim_end_matches('/').to_string();
+    let client = reqwest::Client::new();
+
+    let challenge: serde_json::Value = client
+        .post(format!("{base}/api/publishers/challenge"))
+        .send()
+        .await
+        .map_err(|e| format!("could not reach the Hub: {e}"))?
+        .json()
+        .await
+        .map_err(|e| format!("challenge parse failed: {e}"))?;
+    let nonce = challenge
+        .get("serverlogintoken")
+        .and_then(|v| v.as_str())
+        .ok_or("Hub sent no challenge")?
+        .to_string();
+
+    let mptoken = auth::request_mptoken(&account.uid, &account.sessionkey, &nonce).await?;
+
+    let resp = client
+        .post(format!("{base}/api/publishers/register"))
+        .json(&serde_json::json!({
+            "uid": account.uid,
+            "mptokenv2": mptoken,
+            "serverlogintoken": nonce,
+            "public_key": signing::public_key_b64(&key),
+        }))
+        .send()
+        .await
+        .map_err(|e| format!("register request failed: {e}"))?;
+    let status = resp.status();
+    let body: serde_json::Value = resp.json().await.unwrap_or_else(|_| serde_json::json!({}));
+    if status.is_success() {
+        Ok(body)
+    } else {
+        Err(format!("registration rejected ({status}): {body}"))
+    }
 }
 
-/// Forget the saved publisher token.
-#[tauri::command]
-fn clear_publisher_token(app: AppHandle) -> Result<(), String> {
-    store::remove_sealed(&app, PUBLISHER_TOKEN_FILE)
-}
-
-/// Publish a built manifest to the Hub. The publisher token is loaded from the
-/// sealed store here, never passed in from the webview.
+/// Sign and publish a built manifest to the Hub as the signed-in VS account.
+/// The manifest is serialized to JSON once; that exact value feeds the payload
+/// digest AND the wire envelope, so the Hub canonicalizes identical bytes.
 #[tauri::command]
 async fn publish_pack(app: AppHandle, hub_url: String, manifest: manifest::Manifest) -> Result<String, String> {
-    let token = store::load_sealed(&app, PUBLISHER_TOKEN_FILE)
-        .and_then(|b| String::from_utf8(b).ok())
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .ok_or("No publisher token saved. Add it on the Publish screen first.")?;
-    curator::publish(&hub_url, &token, &manifest).await
+    let account = store::load_account(&app).ok_or("Sign in to your Vintage Story account first.")?;
+    let key = signing::load_or_create_key(&app)?;
+    let value = serde_json::to_value(&manifest).map_err(|e| format!("manifest serialize failed: {e}"))?;
+    let payload = signing::signing_payload(&value, &account.uid)?;
+    let signature = signing::sign(&key, &payload);
+    curator::publish(&hub_url, &manifest.pack.id, &value, &signature, &account.uid).await
 }
 
 /// `ModConfig/*.json` files in an install, as override candidates for the curator.
@@ -670,9 +726,8 @@ pub fn run() {
             curate_pack,
             publish_pack,
             list_config_files,
-            set_publisher_token,
-            has_publisher_token,
-            clear_publisher_token,
+            publisher_status,
+            register_publisher,
             hub_list_packs,
             hub_pack,
             hub_pack_manifest,

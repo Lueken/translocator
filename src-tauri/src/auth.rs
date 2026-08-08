@@ -94,3 +94,48 @@ pub async fn client_validate(uid: &str, sessionkey: &str) -> Result<ValidateResp
         .await
         .map_err(|e| format!("clientvalidate parse failed: {e}"))
 }
+
+#[derive(serde::Deserialize)]
+struct MpTokenResponse {
+    #[serde(default)]
+    valid: i64,
+    #[serde(default)]
+    reason: Option<String>,
+    #[serde(default)]
+    mptokenv2: Option<String>,
+}
+
+/// POST /v2.1/clientrequestmptoken: exchange the stored session for a
+/// single-use multiplayer token bound to `serverlogintoken` (an arbitrary
+/// nonce minted by whoever will validate us - a game server, or the Hub for
+/// publisher registration). Same call the game makes when joining a server;
+/// the sessionkey itself never goes anywhere but VS's own auth server.
+pub async fn request_mptoken(
+    uid: &str,
+    sessionkey: &str,
+    serverlogintoken: &str,
+) -> Result<String, String> {
+    let params = [
+        ("uid", uid),
+        ("serverlogintoken", serverlogintoken),
+        ("sessionkey", sessionkey),
+    ];
+    let resp = reqwest::Client::new()
+        .post(format!("{AUTH_BASE}/v2.1/clientrequestmptoken"))
+        .form(&params)
+        .send()
+        .await
+        .map_err(|e| format!("mptoken request failed: {e}"))?;
+    let r: MpTokenResponse = resp
+        .json()
+        .await
+        .map_err(|e| format!("mptoken parse failed: {e}"))?;
+    if r.valid == 1 {
+        r.mptokenv2.ok_or_else(|| "auth server sent no mptoken".into())
+    } else {
+        Err(format!(
+            "VS auth server refused an mptoken: {}",
+            r.reason.unwrap_or_else(|| "unknown".into())
+        ))
+    }
+}
