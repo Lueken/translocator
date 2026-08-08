@@ -22,6 +22,14 @@ pub async fn launch_and_wait(
     extra_args: &[String],
 ) -> Result<i32, String> {
     let mut cmd = Command::new(game_exe);
+    // The game resolves relative paths (notably the bundled "Mods" entry in
+    // clientsettings modPaths) against its working directory. Without this,
+    // the child inherits Translocator's own CWD and can pick up system mods
+    // from a DIFFERENT install at a different game version, producing a
+    // version-mixed client that no server will accept.
+    if let Some(exe_dir) = Path::new(game_exe).parent() {
+        cmd.current_dir(exe_dir);
+    }
     cmd.arg(format!("--dataPath={}", install_dir.display()));
     if let Some(sp) = start_params {
         for part in sp.split_whitespace() {

@@ -230,6 +230,23 @@ pub fn seed_clientsettings(source_dir: &Path, dest_dir: &Path) -> Result<bool, S
             ss.remove(*k);
         }
     }
+    // The mod paths must belong to the DESTINATION install. The relative
+    // "Mods" entry is the game folder's bundled system mods; the absolute
+    // entry is this install's own Mods dir. Copying the source's absolute
+    // path verbatim was the bug that silently pointed a new install at
+    // another install's mod set.
+    if let Some(sls) = v
+        .get_mut("stringListSettings")
+        .and_then(|s| s.as_object_mut())
+    {
+        sls.insert(
+            "modPaths".to_string(),
+            serde_json::json!([
+                "Mods",
+                dest_dir.join("Mods").to_string_lossy().into_owned(),
+            ]),
+        );
+    }
     std::fs::create_dir_all(dest_dir).map_err(|e| e.to_string())?;
     let out = serde_json::to_string_pretty(&v).map_err(|e| e.to_string())?;
     std::fs::write(dest_dir.join("clientsettings.json"), out).map_err(|e| e.to_string())?;
