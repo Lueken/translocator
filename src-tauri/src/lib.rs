@@ -17,6 +17,7 @@ mod migrate;
 mod models;
 mod mods;
 mod optimum;
+mod pack_install;
 mod servers;
 mod session;
 mod signing;
@@ -517,7 +518,24 @@ async fn search_mods(app: AppHandle, text: String) -> Result<Vec<mods::ModSummar
 #[tauri::command]
 async fn install_mod(app: AppHandle, install_dir: String, modidstr: String) -> Result<String, String> {
     require_login(&app)?;
+    refuse_if_managed(&install_dir, true)?;
     mods::install_latest(&app, &PathBuf::from(install_dir), &modidstr).await
+}
+
+/// A mod's discovery detail for the Mods tab: ModDB description + recent
+/// releases (with changelogs and game-version tags).
+#[tauri::command]
+async fn mod_detail(app: AppHandle, modidstr: String) -> Result<mods::ModDetailView, String> {
+    require_login(&app)?;
+    mods::mod_detail(&modidstr, 5).await
+}
+
+/// A mod's ModDB page URL, resolved live (the page route wants the assetid,
+/// which manifests don't carry). The frontend opens it via open_url.
+#[tauri::command]
+async fn mod_page_url(app: AppHandle, modidstr: String) -> Result<String, String> {
+    require_login(&app)?;
+    mods::page_url(&modidstr).await
 }
 
 /// Author donation link(s) for a mod - the structured `donateurl` field if the
@@ -526,6 +544,29 @@ async fn install_mod(app: AppHandle, install_dir: String, modidstr: String) -> R
 async fn mod_donations(app: AppHandle, modidstr: String) -> Result<Vec<String>, String> {
     require_login(&app)?;
     mods::get_donations(&modidstr).await
+}
+
+/// The freeze, enforced backend-side: while an install is pack-managed, its
+/// mod set belongs to the pack publisher. `blocking_extras` gates ADDING mods
+/// (refused only for strict packs); leaving it false gates changing pack-owned
+/// versions (refused for every managed install).
+fn refuse_if_managed(install_dir: &str, blocking_extras: bool) -> Result<(), String> {
+    let meta = match installations::read_meta(&PathBuf::from(install_dir)) {
+        Some(m) => m,
+        None => return Ok(()),
+    };
+    if meta.managed_by.is_empty() {
+        return Ok(());
+    }
+    if blocking_extras && !meta.pack_strict {
+        return Ok(()); // non-strict packs allow user-added mods
+    }
+    let what = if blocking_extras {
+        "is a strict pack install; extra mods would break the server match"
+    } else {
+        "is managed by its pack; mod versions only change through a pack update"
+    };
+    Err(format!("This installation {what} ({}).", meta.managed_by))
 }
 
 /// Installed mods with newer ModDB releases, each release carrying its
@@ -537,6 +578,7 @@ async fn check_updates(
     game_version: String,
 ) -> Result<Vec<updates::ModUpdate>, String> {
     require_login(&app)?;
+    refuse_if_managed(&install_dir, false)?;
     updates::check_updates(&app, &PathBuf::from(install_dir), &game_version).await
 }
 
@@ -550,6 +592,7 @@ async fn install_release(
     old_filename: Option<String>,
 ) -> Result<String, String> {
     require_login(&app)?;
+    refuse_if_managed(&install_dir, false)?;
     mods::install_release(
         &app,
         &PathBuf::from(install_dir),
@@ -801,6 +844,33 @@ async fn hub_pack_manifest(
     hub::pack_manifest(&hub_url, &id, version.as_deref()).await
 }
 
+/// Install a published pack as a fresh pack-managed installation: fetch the
+/// latest manifest, gate on min_launcher_version, ensure the game version,
+/// stage-download + verify every pinned mod, place, apply overrides, add the
+/// pack's server, and freeze. Emits "pack-progress". Returns the install path.
+#[tauri::command]
+async fn install_pack(
+    app: AppHandle,
+    installations_dir: String,
+    hub_url: String,
+    pack_id: String,
+    name: String,
+    seed_from: Option<String>,
+    optional_choices: Option<std::collections::BTreeMap<String, bool>>,
+) -> Result<String, String> {
+    require_login(&app)?;
+    pack_install::install_pack(
+        &app,
+        &PathBuf::from(installations_dir),
+        &hub_url,
+        &pack_id,
+        &name,
+        seed_from,
+        optional_choices.unwrap_or_default(),
+    )
+    .await
+}
+
 /// The Vintage Story masterserver public server list (the Servers > Public tab).
 #[tauri::command]
 async fn list_public_servers(app: AppHandle) -> Result<Vec<servers::PublicServer>, String> {
@@ -909,6 +979,8 @@ pub fn run() {
             search_mods,
             install_mod,
             mod_donations,
+            mod_page_url,
+            mod_detail,
             check_deps,
             check_updates,
             install_release,
@@ -931,6 +1003,7 @@ pub fn run() {
             hub_list_packs,
             hub_pack,
             hub_pack_manifest,
+            install_pack,
             list_public_servers,
             connect_server,
             add_server_to_install,

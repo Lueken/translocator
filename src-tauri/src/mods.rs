@@ -32,7 +32,7 @@ fn is_allowed_mod_url(url: &str) -> bool {
 /// Reduce an API-supplied filename to a safe basename that can only ever land
 /// inside `Mods/`: no path separators, no parent refs, `.zip` only. Anything
 /// suspicious falls back to a name we construct ourselves.
-fn safe_zip_name(raw: &str, modidstr: &str, modversion: &str) -> String {
+pub(crate) fn safe_zip_name(raw: &str, modidstr: &str, modversion: &str) -> String {
     let base = raw.rsplit(['/', '\\']).next().unwrap_or("").trim();
     let looks_safe = !base.is_empty()
         && !base.contains("..")
@@ -53,7 +53,7 @@ fn safe_zip_name(raw: &str, modidstr: &str, modversion: &str) -> String {
 
 /// The first bytes of every PKZip file. VS mods are zips; checking this stops a
 /// wrong URL or an HTML error page from being saved into Mods/ as a `.zip`.
-fn looks_like_zip(path: &Path) -> bool {
+pub(crate) fn looks_like_zip(path: &Path) -> bool {
     use std::io::Read;
     let mut buf = [0u8; 2];
     std::fs::File::open(path)
@@ -365,6 +365,62 @@ pub async fn install_release(
         .ok_or_else(|| format!("release {modversion} not found for {modidstr}"))?
         .clone();
     download_release(app, &client, install_dir, modidstr, &rel, old_filename).await
+}
+
+/// A mod's full detail for the Mods tab's discovery view: the ModDB page
+/// description and its recent releases. The description ships as HTML; the
+/// frontend renders it as plain text (never as markup), so nothing from ModDB
+/// can inject into the webview.
+#[derive(serde::Serialize)]
+pub struct ModDetailView {
+    pub name: String,
+    pub text: String,
+    pub side: String,
+    pub assetid: u64,
+    pub releases: Vec<ReleaseView>,
+}
+
+#[derive(serde::Serialize)]
+pub struct ReleaseView {
+    pub modversion: String,
+    pub tags: Vec<String>,
+    pub changelog: String,
+    pub created: String,
+}
+
+/// Fetch the discovery detail for one mod (top `max_releases` releases).
+pub async fn mod_detail(modidstr: &str, max_releases: usize) -> Result<ModDetailView, String> {
+    let client = reqwest::Client::new();
+    let full = fetch_full(&client, modidstr).await?;
+    Ok(ModDetailView {
+        name: full.name,
+        text: full.text,
+        side: full.side,
+        assetid: full.assetid,
+        releases: full
+            .releases
+            .iter()
+            .take(max_releases)
+            .map(|r| ReleaseView {
+                modversion: r.modversion.clone(),
+                tags: r.tags.clone(),
+                changelog: r.changelog.clone(),
+                created: r.created.clone(),
+            })
+            .collect(),
+    })
+}
+
+/// The mod's ModDB page URL, resolved live via the API. The `/show/mod/`
+/// route takes the ASSETID; the numeric modid 404s (verified empirically),
+/// and manifests don't carry assetids, so this lookup exists.
+pub async fn page_url(modidstr: &str) -> Result<String, String> {
+    let client = reqwest::Client::new();
+    let full = fetch_full(&client, modidstr).await?;
+    if full.assetid == 0 {
+        return Err(format!("{modidstr}: ModDB returned no assetid"));
+    }
+    Ok(format!("https://mods.vintagestory.at/show/mod/{}", full.assetid))
 }
 
 // ---------------------------------------------------------------- donations

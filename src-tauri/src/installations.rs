@@ -10,6 +10,7 @@
 
 use crate::mods;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::time::SystemTime;
 
@@ -52,6 +53,29 @@ pub struct InstallationMeta {
     /// total seconds played through Translocator.
     #[serde(default)]
     pub total_time_played: u64,
+
+    // ---- pack-managed freeze (docs/modpack-manifest.md step 7) ----
+    // All default/skipped so a personal install's translocator.json is unchanged.
+    /// `"<pack.id>@<pack.version>"` while this install is pack-managed; empty
+    /// otherwise. While set, the per-mod update manager is disabled and the only
+    /// update path is a whole-pack update.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub managed_by: String,
+    /// The managing pack's `strict` flag: true = the manifest IS the Mods
+    /// folder, extra mod installs are refused and updates sweep foreign zips.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub pack_strict: bool,
+    /// Zip filenames the pack placed; what update reconciliation may touch.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pack_owned_files: Vec<String>,
+    /// Canonical hash of each override as applied (semantic-canonical for JSON),
+    /// keyed by the override's relative path. The user-edit detector.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub override_hashes: BTreeMap<String, String>,
+    /// The user's optional-mod choices, keyed by modidstr; preserved across
+    /// pack updates. Missing key = the manifest's `required` default.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub optional_choices: BTreeMap<String, bool>,
 }
 
 impl Default for InstallationMeta {
@@ -68,6 +92,11 @@ impl Default for InstallationMeta {
             favorite: false,
             last_played: 0,
             total_time_played: 0,
+            managed_by: String::new(),
+            pack_strict: false,
+            pack_owned_files: Vec::new(),
+            override_hashes: BTreeMap::new(),
+            optional_choices: BTreeMap::new(),
         }
     }
 }
@@ -175,7 +204,7 @@ pub fn list(installations_dir: &Path, default_version: &str) -> Result<Vec<Insta
     Ok(cards)
 }
 
-fn slugify(name: &str) -> String {
+pub(crate) fn slugify(name: &str) -> String {
     let s: String = name
         .chars()
         .map(|c| if c.is_alphanumeric() { c } else { '-' })

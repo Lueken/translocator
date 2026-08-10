@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -30,12 +30,20 @@ type InstallationMeta = {
   favorite: boolean;
   last_played: number;
   total_time_played: number;
+  // pack-managed freeze (absent on personal installs)
+  managed_by?: string;
+  pack_strict?: boolean;
+  pack_owned_files?: string[];
+  override_hashes?: Record<string, string>;
+  optional_choices?: Record<string, boolean>;
 };
 type InstallationCard = { path: string; meta: InstallationMeta; mod_count: number; has_session: boolean };
 type PlayResult =
   | { status: "needsRelogin"; reason: string }
   | { status: "played"; exit_code: number; rotated: boolean; account: Account };
 type ModSummary = { modid: number; modidstr: string; name: string; summary: string; author: string; downloads: number };
+type ReleaseView = { modversion: string; tags: string[]; changelog: string; created: string };
+type ModDetailView = { name: string; text: string; side: string; assetid: number; releases: ReleaseView[] };
 type MissingDep = { modid: string; version: string };
 type Compat = "exact" | "minor" | "unlikely";
 type ReleaseInfo = { modversion: string; compat: Compat; changelog: string; created: string };
@@ -79,7 +87,7 @@ type PackSummary = {
 type PackManifestMod = { modid: number; modidstr: string; name: string; modversion: string; side: string; required: boolean; fileid?: number; sha256?: string };
 type PackManifest = {
   manifest_version: number;
-  pack: { id: string; name: string; version: string; author: string; summary?: string; description?: string; tags?: string[]; game_version: string; icon?: string };
+  pack: { id: string; name: string; version: string; author: string; summary?: string; description?: string; tags?: string[]; game_version: string; icon?: string; strict?: boolean; min_launcher_version?: string };
   links?: { website?: string; discord?: string; source?: string; donate?: string } | null;
   server?: { address: string; auto_add: boolean } | null;
   mods: PackManifestMod[];
@@ -321,7 +329,11 @@ function App() {
 
   const [search, setSearch] = useState("");
   const [results, setResults] = useState<ModSummary[]>([]);
+  const [searching, setSearching] = useState(false);
+  const [searched, setSearched] = useState(false);
   const [installed, setInstalled] = useState<string[]>([]);
+  const [modDetails, setModDetails] = useState<Record<string, ModDetailView | "loading">>({});
+  const [openMod, setOpenMod] = useState<string | null>(null);
 
   const [detected, setDetected] = useState<DetectedLauncher[]>([]);
 
@@ -339,6 +351,13 @@ function App() {
   const [packManifest, setPackManifest] = useState<PackManifest | null>(null);
   const [packBusy, setPackBusy] = useState(false);
   const [packError, setPackError] = useState<string | null>(null);
+  // ---- Install-pack flow ----
+  const [packInstallOpen, setPackInstallOpen] = useState(false);
+  const [packInstallName, setPackInstallName] = useState("");
+  const [packSeed, setPackSeed] = useState<string>("");
+  const [packOptionals, setPackOptionals] = useState<Record<string, boolean>>({});
+  const [packInstalling, setPackInstalling] = useState(false);
+  const [packProgress, setPackProgress] = useState<{ phase: string; detail: string; done: number; total: number; received: number; bytesTotal: number } | null>(null);
 
   // ---- Servers ----
   const [serverTab, setServerTab] = useState<"public" | "private">("public");
@@ -482,17 +501,28 @@ function App() {
         setOptimumPhase(detail);
       }
     });
+    const un5 = listen<{ pack_id: string; phase: string; detail: string; done: number; total: number; received: number; bytes_total: number }>("pack-progress", (e) => {
+      const { phase, detail, done, total, received, bytes_total } = e.payload;
+      setPackProgress({ phase, detail, done, total, received, bytesTotal: bytes_total });
+    });
     return () => {
       un.then((f) => f());
       un2.then((f) => f());
       un3.then((f) => f());
       un4.then((f) => f());
+      un5.then((f) => f());
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   useEffect(() => {
     if (!target && installs.length) setTarget(installs[0].path);
   }, [installs, target]);
+  // First visit to the Mods tab: load the most-downloaded listing so the page
+  // never opens empty and ambiguous ("did it fetch? do I have to search?").
+  useEffect(() => {
+    if (view === "mods" && account && !searched && !searching) doSearch();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [view, account]);
   useEffect(() => {
     if (account && view === "settings") refreshOptimum();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -815,6 +845,53 @@ function App() {
       catch { setCurConfigs([]); }
     }
   }
+  // Owner path: seed the Curator from a pack's published manifest, so a new
+  // version starts from everything already posted (id, page copy, links,
+  // server, override picks) and only the source re-detection is fresh. The Hub
+  // still enforces ownership at publish (the signature must come from the
+  // pack's account); this just saves re-typing what is already published.
+  function bumpPatch(v: string): string {
+    const parts = v.trim().split(".");
+    const last = parseInt(parts[parts.length - 1], 10);
+    if (Number.isNaN(last)) return v;
+    parts[parts.length - 1] = String(last + 1);
+    return parts.join(".");
+  }
+  async function startPackUpdate() {
+    if (!packManifest) return;
+    const p = packManifest.pack;
+    const l = packManifest.links ?? packDetail?.links ?? {};
+    setCurMeta({
+      id: p.id,
+      name: p.name,
+      version: bumpPatch(packDetail?.latest_version || p.version),
+      author: p.author,
+      summary: p.summary || "",
+      description: p.description || "",
+      tags: (p.tags || []).join(", "),
+      game_version: p.game_version,
+      icon: p.icon || "",
+      strict: !!p.strict,
+    });
+    setCurIdEdited(true); // the id is published identity; never re-derive it from the name
+    setCurLinks({ website: l?.website || "", discord: l?.discord || "", source: l?.source || "", donate: l?.donate || "" });
+    setCurServer(
+      packManifest.server
+        ? { address: packManifest.server.address, auto_add: packManifest.server.auto_add }
+        : { address: "", auto_add: false }
+    );
+    const install = curInstall || target || installs[0]?.path || "";
+    setCurInstall(install);
+    setCurPreview(null);
+    setView("curator");
+    try { setPubStatus(await invoke<PublisherStatus>("publisher_status")); } catch { /* non-fatal */ }
+    if (install) {
+      try { setCurConfigs(await invoke<string[]>("list_config_files", { installDir: install })); }
+      catch { setCurConfigs([]); }
+    }
+    setCurSelected(new Set((packManifest.overrides || []).map((o) => o.path)));
+    say(`Updating ${p.name}: fields loaded from the published pack, version drafted as ${bumpPatch(packDetail?.latest_version || p.version)}.`);
+  }
   // Switching the source install invalidates the preview and re-lists configs.
   async function pickCuratorInstall(path: string) {
     setCurInstall(path);
@@ -922,6 +999,155 @@ function App() {
       setPackError(String(e));
     } finally {
       setPackBusy(false);
+    }
+  }
+
+  // Open the install-pack modal with sensible defaults: the pack's name, the
+  // usual settings-seed source, optionals off until toggled.
+  function openInstallPack() {
+    if (!packManifest) return;
+    setPackInstallName(packManifest.pack.name);
+    setPackSeed(seedSettings ? seedSource().value : "");
+    setPackOptionals({});
+    setPackProgress(null);
+    setPackInstallOpen(true);
+  }
+
+  // The install-pack flow: the backend stages + verifies every pinned mod
+  // before anything is placed, then freezes the install to the pack version.
+  async function doInstallPack() {
+    if (!packManifest || !selectedPack) return;
+    const name = packInstallName.trim() || packManifest.pack.name;
+    setPackInstalling(true);
+    setPackProgress(null);
+    try {
+      const path = await invoke<string>("install_pack", {
+        installationsDir,
+        hubUrl: HUB_URL,
+        packId: selectedPack,
+        name,
+        seedFrom: packSeed || null,
+        optionalChoices: packOptionals,
+      });
+      say(`Installed ${packManifest.pack.name} v${packManifest.pack.version} at ${path}`);
+      toast(`${packManifest.pack.name} installed. Ready to play.`);
+      setPackInstallOpen(false);
+      await refreshInstalls();
+      setTarget(path);
+      setView("installations");
+    } catch (e) {
+      say(`Pack install error: ${e}`);
+      toast(`Install failed: ${e}`, undefined, false);
+    } finally {
+      setPackInstalling(false);
+      setPackProgress(null);
+    }
+  }
+
+  // ModDB descriptions arrive as author-written HTML. It is parsed INERT
+  // (DOMParser documents have no browsing context: nothing loads, nothing
+  // executes) and rebuilt from a whitelist: author content only ever becomes
+  // text nodes inside elements WE create, never markup. Structure survives
+  // (headings, lists, emphasis, links via the https-only open_url gate);
+  // images, tables, styles, and everything unknown flatten to their text.
+  function renderRichText(html: string): ReactNode {
+    const doc = new DOMParser().parseFromString(html, "text/html");
+    let key = 0;
+    const render = (node: Node): ReactNode => {
+      if (node.nodeType === Node.TEXT_NODE) return node.textContent;
+      if (node.nodeType !== Node.ELEMENT_NODE) return null;
+      const el = node as Element;
+      const k = ++key;
+      const tag = el.tagName.toLowerCase();
+      // Never render even the TEXT of these: script bodies are code, not prose.
+      if (tag === "script" || tag === "style" || tag === "iframe" || tag === "object" || tag === "embed") return null;
+      const kids = Array.from(el.childNodes).map(render);
+      switch (tag) {
+        case "h1": case "h2": return <div className="rt-h1" key={k}>{kids}</div>;
+        case "h3": case "h4": case "h5": case "h6": return <div className="rt-h2" key={k}>{kids}</div>;
+        case "p": return <p className="rt-p" key={k}>{kids}</p>;
+        case "br": return <br key={k} />;
+        case "strong": case "b": return <strong key={k}>{kids}</strong>;
+        case "em": case "i": return <em key={k}>{kids}</em>;
+        case "u": return <u key={k}>{kids}</u>;
+        case "s": case "strike": case "del": return <s key={k}>{kids}</s>;
+        case "ul": case "ol": return <ul className="rt-list" key={k}>{kids}</ul>;
+        case "li": return <li key={k}>{kids}</li>;
+        case "code": return <code key={k}>{kids}</code>;
+        case "pre": return <pre className="rt-pre" key={k}>{kids}</pre>;
+        case "blockquote": return <blockquote className="rt-quote" key={k}>{kids}</blockquote>;
+        case "a": {
+          const href = el.getAttribute("href") || "";
+          if (/^https?:\/\//i.test(href)) {
+            // Badge links (an image as the whole label) would render empty
+            // once images are dropped; fall back to alt text or the hostname.
+            let label: ReactNode = kids;
+            if (!el.textContent?.trim()) {
+              const alt = Array.from(el.querySelectorAll("img")).map((i) => i.getAttribute("alt") || "").find(Boolean);
+              label = alt || href.replace(/^https?:\/\/(www\.)?/i, "").split("/")[0];
+            }
+            return <button className="link" key={k} onClick={() => invoke("open_url", { url: href })}>{label} ↗</button>;
+          }
+          return <span key={k}>{kids}</span>;
+        }
+        case "img": return null;
+        case "tr": return <div key={k}>{kids}</div>;
+        default: return <span key={k}>{kids}</span>;
+      }
+    };
+    return Array.from(doc.body.childNodes).map(render);
+  }
+
+  // Expand a search result into its discovery detail (description + recent
+  // releases), fetched once and cached for the session.
+  async function toggleModDetail(m: ModSummary) {
+    if (openMod === m.modidstr) {
+      setOpenMod(null);
+      return;
+    }
+    setOpenMod(m.modidstr);
+    if (!modDetails[m.modidstr]) {
+      setModDetails((d) => ({ ...d, [m.modidstr]: "loading" }));
+      try {
+        const det = await invoke<ModDetailView>("mod_detail", { modidstr: m.modidstr });
+        setModDetails((d) => ({ ...d, [m.modidstr]: det }));
+      } catch (e) {
+        say(`Mod detail error: ${e}`);
+        toast(`Could not load details: ${e}`, undefined, false);
+        setModDetails((d) => {
+          const n = { ...d };
+          delete n[m.modidstr];
+          return n;
+        });
+        setOpenMod(null);
+      }
+    }
+  }
+
+  // Open a mod's ModDB page (URL resolved backend-side: the page route wants
+  // the assetid, which manifests don't carry).
+  async function openModPage(modidstr: string) {
+    try {
+      const url = await invoke<string>("mod_page_url", { modidstr });
+      await invoke("open_url", { url });
+    } catch (e) {
+      say(`ModDB page lookup error: ${e}`);
+      toast(`Could not open the ModDB page: ${e}`, undefined, false);
+    }
+  }
+
+  // Open a mod author's donation link, looked up on demand.
+  async function tipModAuthor(modidstr: string, name: string) {
+    try {
+      const links = await invoke<string[]>("mod_donations", { modidstr });
+      if (links.length) {
+        await invoke("open_url", { url: links[0] });
+        say(`♥ Tip ${name}: ${links[0]}`);
+      } else {
+        toast(`${name}'s author lists no tip link on ModDB`, undefined, false);
+      }
+    } catch (e) {
+      say(`Tip lookup error: ${e}`);
     }
   }
 
@@ -1351,14 +1577,15 @@ function App() {
   }
 
   async function doSearch() {
-    setBusy(true);
+    setSearching(true);
     try {
-      say(`Searching ModDB for "${search}" ...`);
+      say(search.trim() ? `Searching ModDB for "${search}" ...` : "Loading the most downloaded mods from ModDB ...");
       setResults(await invoke<ModSummary[]>("search_mods", { text: search }));
+      setSearched(true);
     } catch (e) {
       say(`Search error: ${e}`);
     } finally {
-      setBusy(false);
+      setSearching(false);
     }
   }
   async function doInstall(m: ModSummary) {
@@ -1446,12 +1673,14 @@ function App() {
 
   const targetInfo = installs.find((i) => i.path === target);
   const targetName = targetInfo?.meta.name ?? "";
+  const targetManaged = targetInfo?.meta.managed_by || "";
+  const targetStrict = !!targetManaged && !!targetInfo?.meta.pack_strict;
   const NAV: { id: View; label: string; count?: number }[] = [
     { id: "installations", label: "Installations", count: installs.length },
     { id: "updates", label: "Mod Updates", count: updates.length || undefined },
     { id: "worlds", label: "Worlds", count: worlds.length || undefined },
     { id: "servers", label: "Servers" },
-    { id: "market", label: "Modpacks", count: packs.length || undefined },
+    { id: "market", label: "Modpack Hub", count: packs.length || undefined },
     { id: "mods", label: "Mods", count: installed.length || undefined },
     { id: "settings", label: "Settings" },
   ];
@@ -1634,7 +1863,7 @@ function App() {
                   </select>
                   <span className="pchip">Game <b>{gameVersion}</b></span>
                   <span className="grow" />
-                  <button className="btn" disabled={busy || !target} onClick={checkUpdates}>Check for updates</button>
+                  {!targetManaged && <button className="btn" disabled={busy || !target} onClick={checkUpdates}>Check for updates</button>}
                   {readyUpdates.length > 0 && (
                     <div className="ctacol">
                       <button className="cta" disabled={busy} onClick={updateAllLatest}>Update all compatible</button>
@@ -1659,6 +1888,16 @@ function App() {
               )}
 
               <div className="view">
+                {targetManaged && (
+                  <div className="empty">
+                    <Gear size={40} />
+                    <h3>Managed by its pack</h3>
+                    <p>
+                      This installation is frozen to <b className="tab">{targetManaged}</b>, so every player stays matched to the pack.<br />
+                      Updates arrive when the publisher ships a new pack version; per-mod updates are disabled here.
+                    </p>
+                  </div>
+                )}
                 {progress && (
                   <div className="checking">
                     <div className="checking-t">Consulting the ledger…</div>
@@ -1667,7 +1906,7 @@ function App() {
                   </div>
                 )}
 
-                {!progress && updates.length === 0 && (
+                {!targetManaged && !progress && updates.length === 0 && (
                   checked ? (
                     <div className="empty">
                       <Gear size={40} />
@@ -1793,6 +2032,11 @@ function App() {
                             {inst.meta.version || "n/a"} · {inst.mod_count} mod{inst.mod_count === 1 ? "" : "s"}
                             {inst.has_session && <span style={{ color: "var(--ok)" }}> · ● session</span>}
                           </div>
+                          {inst.meta.managed_by && (
+                            <div className="inst-sub" title={inst.meta.pack_strict ? "Strict pack: the Mods folder is kept exactly matched to the pack manifest" : "Pack-managed: mod versions follow the pack publisher"}>
+                              ⬡ {inst.meta.managed_by}
+                            </div>
+                          )}
                           <div className="inst-sub">
                             {fmtPlaytime(inst.meta.total_time_played)}
                             {inst.meta.last_played ? ` · ${fmtLastPlayed(inst.meta.last_played)}` : ""}
@@ -1826,20 +2070,57 @@ function App() {
               <div className="view">
                 <form style={{ display: "flex", gap: 8, marginBottom: 12 }} onSubmit={(e) => { e.preventDefault(); doSearch(); }}>
                   <input style={{ flex: 1 }} placeholder="Search ModDB…" value={search} onChange={(e) => setSearch(e.target.value)} />
-                  <button className="btn" type="submit" disabled={busy}>Search</button>
+                  <button className="btn" type="submit" disabled={searching}>{searching ? "Searching…" : "Search"}</button>
                 </form>
+                {searching && (
+                  <div className="checking" style={{ padding: "0 0 10px" }}>
+                    <div className="prog-n tab">{search.trim() ? `Searching ModDB for "${search}"…` : "Loading the most downloaded mods from ModDB…"}</div>
+                    <div className="prog"><i className="indet" style={{ width: "40%" }} /></div>
+                  </div>
+                )}
+                {!searching && searched && results.length === 0 && (
+                  <p className="muted" style={{ marginBottom: 12 }}>No mods matched "{search}".</p>
+                )}
+                {!searching && results.length > 0 && !search.trim() && (
+                  <p className="muted" style={{ marginBottom: 8 }}>Most downloaded on ModDB · search to find anything else</p>
+                )}
                 {results.length > 0 && (
                   <div className="list" style={{ marginBottom: 14 }}>
                     {results.map((m) => (
-                      <div className="li" key={m.modid}>
-                        <span><span className="nm">{m.name}</span> <span className="meta">by {m.author} · {m.downloads.toLocaleString()} downloads</span></span>
-                        <span style={{ display: "flex", gap: 8 }}>
-                          <button className="mini" onClick={() => doTip(m)} title="Show author donation link">♥ Tip</button>
-                          <button className="cta" disabled={busy || !target} onClick={() => doInstall(m)}>Install</button>
-                        </span>
+                      <div key={m.modid}>
+                        <div className="li">
+                          <span style={{ cursor: "pointer" }} onClick={() => toggleModDetail(m)}>
+                            <span className="nm">{m.name}</span> <span className="meta">by {m.author} · {m.downloads.toLocaleString()} downloads</span>
+                          </span>
+                          <span style={{ display: "flex", gap: 8 }}>
+                            <button className="mini" onClick={() => toggleModDetail(m)}>{openMod === m.modidstr ? "Hide ▴" : "Details ▾"}</button>
+                            <button className="mini" onClick={() => doTip(m)} title="Show author donation link">♥ Tip</button>
+                            <button className="cta" disabled={busy || !target || targetStrict} onClick={() => doInstall(m)}>Install</button>
+                          </span>
+                        </div>
+                        {openMod === m.modidstr && (() => {
+                          const det = modDetails[m.modidstr];
+                          if (!det || det === "loading") return <div className="mod-detail meta">Loading details…</div>;
+                          return (
+                            <div className="mod-detail">
+                              {m.summary && <div className="meta">{m.summary}</div>}
+                              <div className="mod-desc">{det.text.trim() ? renderRichText(det.text) : "No description on ModDB."}</div>
+                              <div className="meta">
+                                {det.side && det.side !== "both" ? `${det.side}-side · ` : ""}
+                                {det.releases[0] && <>latest {det.releases[0].modversion}{det.releases[0].tags.length ? ` for ${det.releases[0].tags[det.releases[0].tags.length - 1]}` : ""} · </>}
+                                <button className="link" onClick={() => openModPage(m.modidstr)}>Open on ModDB ↗</button>
+                              </div>
+                            </div>
+                          );
+                        })()}
                       </div>
                     ))}
                   </div>
+                )}
+                {targetStrict && (
+                  <p className="muted">
+                    <b>{targetName}</b> is a strict pack install ({targetManaged}); extra mods would break the server match, so installing into it is disabled. Pick another installation above.
+                  </p>
                 )}
                 <p className="muted">Installed in {targetName}: {installed.length} mod{installed.length === 1 ? "" : "s"}.</p>
               </div>
@@ -2035,7 +2316,7 @@ function App() {
           {view === "market" && (
             <>
               <div className="topbar">
-                <div><div className="eyebrow">Published packs</div><h1 className="title">Modpacks</h1></div>
+                <div><div className="eyebrow">Published packs</div><h1 className="title">Modpack Hub</h1></div>
                 <span className="grow" />
                 <button className="btn" disabled={packsBusy} onClick={() => loadPacks(true)}>{packsBusy ? "Loading…" : "Refresh"}</button>
                 <button className="cta" onClick={openCurator}>Publish a pack</button>
@@ -2044,7 +2325,7 @@ function App() {
                 {packsError && (
                   <div className="empty">
                     <Gear size={40} />
-                    <h3>Could not reach the Market</h3>
+                    <h3>Could not reach the Hub</h3>
                     <p>{packsError}</p>
                     <button className="btn" disabled={packsBusy} onClick={() => loadPacks(true)}>Try again</button>
                   </div>
@@ -2087,13 +2368,17 @@ function App() {
           {view === "pack" && (
             <>
               <div className="topbar">
-                <button className="btn" onClick={() => setView("market")}>← Market</button>
+                <button className="btn" onClick={() => setView("market")}>← Modpack Hub</button>
                 <div style={{ marginLeft: 4 }}>
                   <div className="eyebrow">Pack</div>
                   <h1 className="title">{packManifest?.pack.name ?? packDetail?.name ?? selectedPack}</h1>
                 </div>
                 <span className="grow" />
                 {selectedPack && <button className="btn" disabled={packBusy} onClick={() => openPack(selectedPack)}>Refresh</button>}
+                {packManifest && account?.playername === packManifest.pack.author && (
+                  <button className="btn" disabled={packBusy} title="Start a new version of this pack with every published field prefilled" onClick={startPackUpdate}>New version</button>
+                )}
+                {packManifest && <button className="cta" disabled={packBusy || packInstalling} onClick={openInstallPack}>Install this pack</button>}
               </div>
               <div className="view">
                 {packError && (
@@ -2158,14 +2443,27 @@ function App() {
                       {packManifest.mods.map((m) => (
                         <div className="li" key={m.modidstr}>
                           <span>
-                            <span className="nm">{m.name}</span>{" "}
-                            <span className="meta">{m.modidstr} · {m.side}{m.required ? "" : " · optional"}</span>
+                            <span className="nm">{m.name}</span>
+                            {!m.required && <span className="meta"> optional</span>}
                           </span>
-                          <span className="tab">{m.modversion}</span>
+                          <span style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                            <span className="tab">{m.modversion}</span>
+                            <button className="mini" title="Open this mod's ModDB page" onClick={() => openModPage(m.modidstr)}>ModDB ↗</button>
+                            <button className="mini" title="Open the author's donation link" onClick={() => tipModAuthor(m.modidstr, m.name)}>♥ Tip the author</button>
+                          </span>
                         </div>
                       ))}
                     </div>
-                    <p className="muted" style={{ marginTop: 12 }}>Installing a pack lands in a later build; this is the read-only pack page for now.</p>
+                    {(() => {
+                      const existing = installs.filter((i) => (i.meta.managed_by || "").startsWith(`${packManifest.pack.id}@`));
+                      return (
+                        <p className="muted" style={{ marginTop: 12 }}>
+                          {existing.length > 0 && <>Installed as <b>{existing.map((i) => i.meta.name).join(", ")}</b> ({existing.map((i) => i.meta.managed_by?.split("@")[1]).join(", ")}). </>}
+                          Installing creates a fresh installation frozen to v{packManifest.pack.version}: every mod is downloaded from ModDB and verified against the publisher's pins.
+                          {packManifest.pack.strict ? " This is a strict pack: the launcher keeps its Mods folder exactly matched to the manifest." : ""}
+                        </p>
+                      );
+                    })()}
                   </>
                 )}
               </div>
@@ -2176,7 +2474,7 @@ function App() {
           {view === "curator" && (
             <>
               <div className="topbar">
-                <button className="btn" onClick={() => setView("market")}>← Modpacks</button>
+                <button className="btn" onClick={() => setView("market")}>← Modpack Hub</button>
                 <div style={{ marginLeft: 4 }}>
                   <div className="eyebrow">Curator</div>
                   <h1 className="title">Publish a pack</h1>
@@ -2666,6 +2964,89 @@ function App() {
           </div>
         </div>
       )}
+
+      {/* install-pack modal */}
+      {packInstallOpen && packManifest && (() => {
+        const clientMods = packManifest.mods.filter((m) => m.side !== "server");
+        const optionals = clientMods.filter((m) => !m.required);
+        const requiredCount = clientMods.length - optionals.length;
+        const chosen = requiredCount + optionals.filter((m) => packOptionals[m.modidstr]).length;
+        const gv = packManifest.pack.game_version;
+        const gvCached = cachedVersions.includes(gv) || availableVersions.find((v) => v.version === gv)?.cached;
+        return (
+          <div className="overlay" onClick={() => !packInstalling && setPackInstallOpen(false)}>
+            <div className="modal wide" onClick={(e) => e.stopPropagation()}>
+              <h3>Install {packManifest.pack.name}</h3>
+              <p className="muted" style={{ marginTop: -4 }}>
+                v{packManifest.pack.version} · VS {gv} · {chosen} mod{chosen === 1 ? "" : "s"} will install
+                {packManifest.server ? <> · server <span className="tab">{packManifest.server.address}</span></> : null}
+              </p>
+              <label className="field"><span className="lab">Installation name</span>
+                <input autoFocus value={packInstallName} onChange={(e) => setPackInstallName(e.target.value)} /></label>
+              <label className="field"><span className="lab">Copy game settings from</span>
+                <select value={packSeed} onChange={(e) => setPackSeed(e.target.value)}>
+                  <option value="">Nothing (fresh settings)</option>
+                  <option value="__base__">Base Vintage Story install</option>
+                  {installs.map((i) => (<option key={i.path} value={i.path}>{i.meta.name}</option>))}
+                </select>
+              </label>
+              {optionals.length > 0 && (
+                <div className="field">
+                  <span className="lab">Optional mods</span>
+                  {optionals.map((m) => (
+                    <label className="row-check" key={m.modidstr}>
+                      <input
+                        type="checkbox"
+                        checked={!!packOptionals[m.modidstr]}
+                        onChange={(e) => setPackOptionals((o) => ({ ...o, [m.modidstr]: e.target.checked }))}
+                      />
+                      <span>{m.name} <span className="meta">{m.modversion}</span></span>
+                    </label>
+                  ))}
+                </div>
+              )}
+              {!gvCached && (
+                <div className="warn-note">
+                  <b>Heads up:</b> VS {gv} downloads first (shared with other installations on this version). Its installer may ask
+                  <i> "An old version was detected. Uninstall it first?"</i>, click <b>No</b>.
+                </div>
+              )}
+              {versionProgress && (
+                <div className="checking" style={{ padding: "6px 0 10px" }}>
+                  <div className="prog-n tab">
+                    {versionProgress.phase === "install" ? `Installing game ${versionProgress.version}…` : `Downloading game ${versionProgress.version}…`}
+                  </div>
+                  <div className="prog"><i className={versionProgress.pct < 0 ? "indet" : ""} style={versionProgress.pct >= 0 ? { width: `${versionProgress.pct}%` } : { width: "40%" }} /></div>
+                </div>
+              )}
+              {packProgress && packProgress.phase === "download" && (
+                <div className="checking" style={{ padding: "6px 0 10px" }}>
+                  <div className="prog-n tab">
+                    Verifying and staging {packProgress.detail} ({Math.min(packProgress.done + 1, packProgress.total)} / {packProgress.total})
+                  </div>
+                  <div className="prog"><i style={{ width: `${packProgress.total ? ((packProgress.done + (packProgress.bytesTotal > 0 ? Math.min(1, packProgress.received / packProgress.bytesTotal) : 0)) / packProgress.total) * 100 : 0}%` }} /></div>
+                </div>
+              )}
+              {packProgress && packProgress.phase === "place" && (
+                <div className="checking" style={{ padding: "6px 0 10px" }}>
+                  <div className="prog-n tab">All mods verified. Placing files and applying config defaults…</div>
+                  <div className="prog"><i className="indet" style={{ width: "40%" }} /></div>
+                </div>
+              )}
+              <p className="muted" style={{ fontSize: 12 }}>
+                Nothing lands in the installation until every mod has downloaded and passed verification.
+                Mod versions are then managed by the pack publisher; updates arrive as whole-pack updates.
+              </p>
+              <div className="acts">
+                <button className="btn" disabled={packInstalling} onClick={() => setPackInstallOpen(false)}>Cancel</button>
+                <button className="cta" disabled={packInstalling || !packInstallName.trim()} onClick={doInstallPack}>
+                  {packInstalling ? "Installing…" : "Install"}
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* join server modal */}
       {joinServer && (() => {

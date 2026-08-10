@@ -38,7 +38,7 @@ fn sha256_file(path: &Path) -> Option<String> {
     Some(format!("{:x}", hasher.finalize()))
 }
 
-/// ModDB `side` -> manifest side. VS/ModDB uses "universal" for both.
+/// A side string ("universal"/"client"/"server") -> manifest side.
 fn normalize_side(s: &str) -> String {
     match s.trim().to_lowercase().as_str() {
         "server" => "server",
@@ -113,6 +113,14 @@ async fn resolve_one(
             reason: "could not read/hash the mod file".into(),
         });
     };
+    // The zip's own modinfo `side` is the ONLY source of truth: it is what the
+    // server enforces at join, and the API defaults an absent side to Universal
+    // (ModInfo.Side = EnumAppSide.Universal, verified in decompile). ModDB's
+    // side is author-entered page metadata and drifts: fallingtree and
+    // specializedbackpacks said "server" on ModDB while their zips are
+    // universal, which skipped them at pack install and broke the join. An
+    // empty side falls through normalize_side to "both", matching the game.
+    let side = normalize_side(&info.side);
     Outcome::Resolved(Box::new(ManifestMod {
         modid: full.modid,
         modidstr: info.modid.clone(),
@@ -120,7 +128,7 @@ async fn resolve_one(
         modversion: info.version,
         fileid: rel.fileid,
         releaseid: if rel.releaseid > 0 { Some(rel.releaseid) } else { None },
-        side: normalize_side(&full.side),
+        side,
         sha256,
         required: true,
     }))

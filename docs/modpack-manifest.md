@@ -79,7 +79,7 @@ fields are snake_case.
       "modversion": "5.0.6",             // display version
       "fileid": 99106,                   // THE download pin -> /download?fileid=99106
       "releaseid": 45029,                // exact release record (links to its changelog)
-      "side": "both",                    // client | server | both (from ModDB mod.side)
+      "side": "both",                    // client | server | both (from the zip's modinfo.json; absent = both)
       "sha256": "<hash of the ModDB-served file>",  // verified on download
       "required": true                   // false = optional, user-toggleable, client-only
     }
@@ -136,7 +136,7 @@ mods-only pack omits this block entirely.
 | `modversion` | string | Display version. |
 | `fileid` | int | The download pin. Resolves to `https://mods.vintagestory.at/download?fileid=<fileid>`. |
 | `releaseid` | int | Exact release record; links to its changelog. |
-| `side` | enum | `client` \| `server` \| `both`. |
+| `side` | enum | `client` \| `server` \| `both`. Sourced from the zip's own `modinfo.json` at curate time, NOT ModDB's side field: the modinfo is what the server enforces at join (and the API defaults an absent side to Universal), while ModDB's side is author-entered page metadata that drifts. |
 | `sha256` | string | Lowercase hex. Computed by the curator from the ModDB-served bytes (see Principles); verified on every install-time download. |
 | `required` | bool | `true` = always installed and frozen. `false` = optional (see below). |
 

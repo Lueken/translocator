@@ -146,6 +146,8 @@ fn meta_from_vsl(v: &VslInstall, dir: &Path) -> InstallationMeta {
         favorite: false,
         last_played: v.last_time_played,
         total_time_played: v.total_time_played / 1000,
+        // An adopted VSL install is by definition a personal one.
+        ..Default::default()
     }
 }
 

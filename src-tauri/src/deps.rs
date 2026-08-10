@@ -17,6 +17,9 @@ pub struct ModInfo {
     pub modid: String,
     pub version: String,
     pub name: String,
+    /// modinfo.json `side`, lowercased ("universal" / "client" / "server");
+    /// empty when the field is absent. This is what the game itself enforces.
+    pub side: String,
     pub dependencies: HashMap<String, String>,
 }
 
@@ -33,13 +36,14 @@ fn parse_modinfo(text: &str) -> Option<ModInfo> {
     let modid = get("modid").and_then(|v| v.as_str()).unwrap_or_default().to_lowercase();
     let version = get("version").and_then(|v| v.as_str()).unwrap_or_default().to_string();
     let name = get("name").and_then(|v| v.as_str()).unwrap_or_default().to_string();
+    let side = get("side").and_then(|v| v.as_str()).unwrap_or_default().to_lowercase();
     let mut dependencies = HashMap::new();
     if let Some(d) = get("dependencies").and_then(|v| v.as_object()) {
         for (k, val) in d {
             dependencies.insert(k.to_lowercase(), val.as_str().unwrap_or("").to_string());
         }
     }
-    Some(ModInfo { modid, version, name, dependencies })
+    Some(ModInfo { modid, version, name, side, dependencies })
 }
 
 /// Read the ModInfo from a mod zip's root modinfo.json.
