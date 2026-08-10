@@ -1,24 +1,260 @@
+TRANSLOCATOR SOFTWARE LICENSE AGREEMENT
+Version 1.0, effective 08/10/2026
+
 Copyright (c) 2026 Lueken Good Design LLC. All rights reserved.
+Translocator is proprietary software. It is not open source.
 
-Translocator is proprietary software.
 
-Official builds are provided free of charge for personal use under the
-end-user notice shown in the application. You may not sell, redistribute,
-or misrepresent the origin of Translocator or its builds.
+0. ACCEPTANCE
 
-Access to this source code, whether as a repository collaborator or by any
-other means, does not grant any license to use, copy, modify, distribute,
-or create derivative works from it, except as needed to review and
-contribute changes back to this repository. Contributions are accepted
-under these same terms.
+By downloading, installing, running, or accessing Translocator or its
+source code, you agree to this Agreement. If you do not agree, do not
+install, run, or access it.
 
-Vintage Story is a trademark of Anego Studios; this project is not
-affiliated with Anego Studios. Optimum is an independent project by
-Zaldaryon under its own license (GPL-3.0 with the Commons Clause) and is
-not part of, bundled with, or redistributed by this software.
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE, AND NONINFRINGEMENT. IN NO EVENT SHALL
-THE AUTHORS BE LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER LIABILITY ARISING
-FROM THE USE OF THIS SOFTWARE.
+1. DEFINITIONS
+
+"Licensor" means Lueken Good Design LLC.
+
+"Software" means Translocator in all forms, including its source code,
+assets, configuration files, documentation, and Official Builds.
+
+"Official Build" means a compiled release of the Software published by
+Licensor through a distribution channel Licensor controls or authorizes.
+
+"Repository" means any private source code repository for the Software
+controlled by Licensor.
+
+"Collaborator" means any person granted access to the Repository.
+
+"Contribution" means any work of authorship submitted to Licensor or to
+the Repository, including code, assets, documentation, and review or
+issue commentary containing proposed changes.
+
+"Personal Use" means installing and running Official Builds for your own
+gameplay, including on a multiplayer server you operate, provided no fee,
+subscription, paywall, priority access, or other consideration is charged
+for access to the server or to any feature of the Software. Voluntary
+donations which do not gate access to gameplay or to features are
+permitted.
+
+
+2. OWNERSHIP
+
+Licensor retains all right, title, and interest in the Software,
+including all copyright, trademark, patent, trade secret, and other
+intellectual property rights. No rights are granted except those stated
+expressly in this Agreement. Nothing here transfers ownership.
+
+
+3. END USER LICENSE FOR OFFICIAL BUILDS
+
+3.1 Grant. Subject to your compliance with this Agreement, Licensor
+grants you a personal, non-exclusive, non-transferable, non-sublicensable,
+revocable, royalty-free license to download, install, and run Official
+Builds for Personal Use.
+
+3.2 Restrictions. You shall not:
+
+  (a) sell, license, rent, lease, or otherwise commercialize the Software
+      or access to it;
+
+  (b) redistribute, mirror, repackage, or host Official Builds outside
+      channels authorized by Licensor, including inclusion in any modpack,
+      launcher, server bundle, or other distribution without prior
+      written permission from Licensor;
+
+  (c) modify, adapt, translate, or create derivative works of the
+      Software, or produce or distribute unofficial builds;
+
+  (d) reverse engineer, decompile, disassemble, deobfuscate, or otherwise
+      attempt to derive source code, structure, or algorithms from
+      Official Builds, except to the extent this restriction is
+      unenforceable under applicable law;
+
+  (e) remove, alter, or obscure any copyright, trademark, attribution, or
+      license notice;
+
+  (f) misrepresent the origin or authorship of the Software, or present
+      any build as official when Licensor has not published it.
+
+3.3 Permissions. Licensor grants exceptions to Section 3.2, including
+modpack inclusion, in writing on request at systems@lueken-good.design. A permission
+is effective only when given in writing by Licensor and extends no
+further than its stated scope.
+
+3.4 Base game. The Software is a companion application (a launcher) for
+use with Vintage Story and requires a lawfully obtained copy of the game.
+
+
+4. SOURCE CODE AND REPOSITORY ACCESS
+
+4.1 No license from access. Access to the Repository or to the source
+code of the Software, whether as a Collaborator, through a fork, through
+inadvertent disclosure, or by any other means, grants no license to use,
+copy, modify, distribute, sublicense, or create derivative works from the
+source code. The sole permitted purpose is reviewing the source code and
+preparing Contributions for submission back to the Repository.
+
+4.2 Confidentiality. The Repository and its contents are confidential
+information of Licensor. A Collaborator shall not disclose, publish,
+post, transmit, or otherwise make the source code or any portion of it
+available to any third party, and shall not use it for any purpose other
+than the permitted purpose in Section 4.1. A Collaborator shall protect
+it with no less care than they apply to their own confidential
+information, and in no case with less than reasonable care. A Collaborator
+shall notify Licensor promptly on discovering any unauthorized disclosure.
+This obligation survives termination of access and continues until the
+material enters the public domain through no act or omission of the
+Collaborator.
+
+4.3 Revocation. Licensor grants and revokes Repository access at its sole
+discretion, with or without cause and without notice. On revocation, or
+on written request from Licensor, the Collaborator shall cease all use of
+the source code, delete all local copies, clones, forks, branches, and
+derived material in their possession or control, and confirm deletion in
+writing on request.
+
+
+5. CONTRIBUTIONS
+
+5.1 Copyright license to Licensor. For each Contribution, the contributor
+grants Licensor a perpetual, worldwide, irrevocable, non-exclusive,
+royalty-free, fully paid, transferable license, with the right to
+sublicense through multiple tiers, to reproduce, prepare derivative works
+of, publicly display, publicly perform, distribute, sell, relicense, and
+otherwise exploit the Contribution and derivative works of it, in any
+form and through any medium now known or later developed, and to release
+the Contribution under any license terms Licensor selects, including
+proprietary or commercial terms.
+
+5.2 Patent license. The contributor grants Licensor and recipients of the
+Software a perpetual, worldwide, irrevocable, non-exclusive, royalty-free
+patent license to make, have made, use, offer to sell, sell, import, and
+otherwise transfer the Contribution. This grant covers only those patent
+claims licensable by the contributor which are necessarily infringed by
+the Contribution alone or by the combination of the Contribution with the
+Software.
+
+5.3 Representations. The contributor represents and warrants each of the
+following: the Contribution is their original work; they hold all rights
+necessary to grant the licenses in Sections 5.1 and 5.2; the Contribution
+contains no third-party code, assets, or license obligations except as
+disclosed to Licensor in writing before submission; and no employer,
+client, or other third party holds a claim which conflicts with these
+grants.
+
+5.4 No obligation. Licensor is under no obligation to review, accept,
+merge, retain, or publish any Contribution. Contributions are made
+voluntarily, without expectation of payment, royalty, employment, equity,
+or credit. Licensor extends attribution at its discretion.
+
+5.5 Retained rights. The contributor retains copyright in their
+Contribution and retains the right to use it for other purposes, subject
+to Section 4.2 where the Contribution incorporates, embeds, or reveals
+confidential source code of the Software.
+
+5.6 Feedback. Suggestions, bug reports, and feature ideas submitted to
+Licensor are non-confidential, and Licensor is free to use them without
+restriction or obligation.
+
+
+6. THIRD-PARTY NOTICES
+
+6.1 Vintage Story is a trademark of Anego Studios. This project is
+independent and is not affiliated with, endorsed by, or sponsored by
+Anego Studios.
+
+6.2 Optimum is an independent project by Zaldaryon, distributed under
+GPL-3.0 with the Commons Clause. Optimum is not part of, bundled with,
+modified by, statically linked into, or redistributed by the Software.
+Any interaction between the Software and Optimum occurs at arm's
+length: the Software invokes Optimum's own published installer and
+executable as separate operating system processes and does not link
+against, compile against, or incorporate any Optimum code. The license
+of Optimum governs Optimum.
+
+6.3 All other trademarks are the property of their respective owners.
+
+
+7. TERMINATION
+
+7.1 This Agreement and every license granted under it terminate
+automatically and immediately on any breach by you.
+
+7.2 Licensor terminates the license in Section 3, or Repository access
+under Section 4.3, at its discretion at any time.
+
+7.3 On termination you shall stop all use of the Software and delete all
+copies of the source code in your possession or control. Sections 2, 4.2,
+5, 6, 8, 9, 10, and 11 survive termination.
+
+
+8. DISCLAIMER OF WARRANTY
+
+THE SOFTWARE IS PROVIDED "AS IS" AND "AS AVAILABLE", WITHOUT WARRANTY OF
+ANY KIND, EXPRESS, IMPLIED, OR STATUTORY, INCLUDING BUT NOT LIMITED TO
+THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE,
+TITLE, NONINFRINGEMENT, AND ANY WARRANTY ARISING FROM COURSE OF DEALING
+OR USAGE OF TRADE. LICENSOR DOES NOT WARRANT THAT THE SOFTWARE WILL BE
+UNINTERRUPTED OR ERROR FREE, THAT IT WILL BE COMPATIBLE WITH ANY VERSION
+OF THE BASE GAME OR WITH ANY OTHER MODIFICATION, OR THAT IT WILL NOT
+CAUSE LOSS OR CORRUPTION OF SAVE DATA, WORLD DATA, OR SERVER DATA. YOU
+BEAR THE ENTIRE RISK OF USE, AND YOU ARE RESPONSIBLE FOR MAINTAINING
+BACKUPS.
+
+
+9. LIMITATION OF LIABILITY
+
+IN NO EVENT SHALL LICENSOR OR ITS MEMBERS, OFFICERS, EMPLOYEES, OR
+CONTRIBUTORS BE LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER LIABILITY,
+WHETHER IN AN ACTION OF CONTRACT, TORT, NEGLIGENCE, STRICT LIABILITY, OR
+OTHERWISE, ARISING FROM, OUT OF, OR IN CONNECTION WITH THE SOFTWARE OR
+THE USE OR OTHER DEALINGS IN THE SOFTWARE. THIS EXCLUSION COVERS DIRECT,
+INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, PUNITIVE, AND CONSEQUENTIAL
+DAMAGES, LOSS OF DATA, LOSS OF PROFITS, AND BUSINESS INTERRUPTION, EVEN
+IF LICENSOR HAS BEEN ADVISED OF THE POSSIBILITY OF SUCH DAMAGES. THE
+TOTAL AGGREGATE LIABILITY OF LICENSOR SHALL NOT EXCEED THE GREATER OF THE
+AMOUNT YOU PAID LICENSOR FOR THE SOFTWARE IN THE TWELVE MONTHS PRECEDING
+THE CLAIM OR FIFTY UNITED STATES DOLLARS. SOME JURISDICTIONS DO NOT ALLOW
+CERTAIN EXCLUSIONS OR LIMITATIONS, SO PORTIONS OF SECTIONS 8 AND 9 MIGHT
+NOT APPLY TO YOU.
+
+
+10. GOVERNING LAW AND VENUE
+
+This Agreement is governed by the laws of the State of Oregon, United
+States, without regard to its conflict of laws rules. The exclusive venue
+for any dispute arising under this Agreement is the state and federal
+courts located in Yamhill County, Oregon, and you consent to personal
+jurisdiction and venue in those courts. The United Nations Convention on
+Contracts for the International Sale of Goods does not apply.
+
+
+11. GENERAL
+
+11.1 Precedence. This Agreement governs the Software. Any end-user notice
+displayed inside the application is a summary provided for convenience.
+Where the notice and this Agreement conflict, this Agreement controls.
+
+11.2 Entire agreement. This Agreement is the complete agreement between
+you and Licensor regarding the Software and supersedes all prior or
+contemporaneous understandings, except for a separate written agreement
+signed by Licensor.
+
+11.3 Versions. Licensor revises this Agreement for future releases. The
+version distributed with a given release governs that release. Continued
+use of the Software or the Repository after a revision constitutes
+acceptance of the revision.
+
+11.4 Severability. If any provision is held unenforceable, it is modified
+to the minimum extent necessary to make it enforceable, and the remaining
+provisions stay in full force.
+
+11.5 No waiver. Failure to enforce any provision is not a waiver of it.
+
+11.6 Assignment. You shall not assign or transfer this Agreement or any
+rights under it. Licensor assigns it freely, including in connection with
+a merger, reorganization, or sale of assets.
+
+11.7 Contact. systems@lueken-good.design
