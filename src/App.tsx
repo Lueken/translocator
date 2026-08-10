@@ -139,7 +139,7 @@ type Theme = "almanac" | "workshop" | "terminal";
 
 // ---- App EULA (shown before the login wall; acceptance version-stamped) ----
 // Bump the version only on MATERIAL changes: it re-prompts every user.
-const APP_EULA_VERSION = "1.0";
+const APP_EULA_VERSION = "1.1";
 const APP_EULA: { h: string; p: string }[] = [
   {
     h: "1. Independent project",
@@ -159,7 +159,7 @@ const APP_EULA: { h: string; p: string }[] = [
   },
   {
     h: "5. License",
-    p: "Translocator is proprietary software of Lueken Good Design LLC, provided free of charge for personal use. You may not sell, redistribute, or misrepresent the origin of Translocator. Publishing modpacks through Translocator does not transfer any rights in the referenced mods, which remain subject to their authors' licenses.",
+    p: "Translocator is proprietary software of Lueken Good Design LLC, provided free of charge for personal use. This notice is a plain-language summary; the complete and controlling terms are in the Translocator LICENSE file, which is installed alongside the application and included in the source repository. You may not sell, redistribute, or misrepresent the origin of Translocator. Publishing modpacks through Translocator does not transfer any rights in the referenced mods, which remain subject to their authors' licenses.",
   },
   {
     h: "6. Disclaimer of warranty",
