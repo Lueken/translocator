@@ -49,6 +49,44 @@ fn require_login(app: &AppHandle) -> Result<(), String> {
     require_account(app).map(|_| ())
 }
 
+// ---- App EULA (the END-USER NOTICE, distinct from Optimum's own notice) ----
+// PRE-AUTH by design: the notice is shown before the login wall, so its two
+// commands sit outside it. Acceptance is version-stamped; a materially
+// changed notice (new version string) re-prompts.
+
+#[derive(Serialize, serde::Deserialize, Default)]
+struct EulaRecord {
+    accepted_version: String,
+}
+
+fn eula_file(app: &AppHandle) -> Result<PathBuf, String> {
+    let dir = app
+        .path()
+        .data_dir()
+        .map_err(|e| e.to_string())?
+        .join("Translocator");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    Ok(dir.join("eula.json"))
+}
+
+/// The accepted notice version, if any.
+#[tauri::command]
+fn eula_status(app: AppHandle) -> Result<Option<String>, String> {
+    Ok(std::fs::read_to_string(eula_file(&app)?)
+        .ok()
+        .and_then(|t| serde_json::from_str::<EulaRecord>(&t).ok())
+        .map(|r| r.accepted_version)
+        .filter(|v| !v.is_empty()))
+}
+
+/// Record acceptance of the notice version the frontend displayed.
+#[tauri::command]
+fn accept_app_eula(app: AppHandle, version: String) -> Result<(), String> {
+    let json = serde_json::to_vec_pretty(&EulaRecord { accepted_version: version })
+        .map_err(|e| e.to_string())?;
+    std::fs::write(eula_file(&app)?, json).map_err(|e| e.to_string())
+}
+
 /// Result of a login attempt, tagged for the frontend.
 #[derive(Serialize)]
 #[serde(tag = "status", rename_all = "camelCase")]
@@ -148,9 +186,11 @@ fn save_installation(
     installations::write_meta(&PathBuf::from(path), &meta)
 }
 
-/// Delete an installation folder. The UI confirms first.
+/// Delete an installation folder. The UI confirms first. Async + off-thread:
+/// a sync command would run remove_dir_all on the MAIN thread and freeze the
+/// whole window for the seconds a multi-gigabyte install takes to die.
 #[tauri::command]
-fn delete_installation(app: AppHandle, installations_dir: String, path: String) -> Result<(), String> {
+async fn delete_installation(app: AppHandle, installations_dir: String, path: String) -> Result<(), String> {
     require_login(&app)?;
     let dir = PathBuf::from(&path);
     // Containment: only ever remove a real installation that lives directly
@@ -161,7 +201,9 @@ fn delete_installation(app: AppHandle, installations_dir: String, path: String) 
     {
         return Err("refused to delete: not an installation in the configured folder".into());
     }
-    installations::delete(&dir)
+    tokio::task::spawn_blocking(move || installations::delete(&dir))
+        .await
+        .map_err(|e| format!("delete task failed: {e}"))?
 }
 
 /// Reveal an installation's folder in the OS file browser.
@@ -956,6 +998,8 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .invoke_handler(tauri::generate_handler![
+            eula_status,
+            accept_app_eula,
             login,
             get_account,
             logout,

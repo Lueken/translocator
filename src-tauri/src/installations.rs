@@ -181,6 +181,11 @@ pub fn list(installations_dir: &Path, default_version: &str) -> Result<Vec<Insta
         let entry = entry.map_err(|e| e.to_string())?;
         if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
             let path = entry.path();
+            // Dot-prefixed folders are ours (delete tombstones, pack stages),
+            // never installations to adopt.
+            if entry.file_name().to_string_lossy().starts_with('.') {
+                continue;
+            }
             if !looks_like_install(&path) {
                 continue;
             }
@@ -299,10 +304,24 @@ pub fn create(installations_dir: &Path, name: &str, version: &str) -> Result<Str
     Ok(dir.to_string_lossy().into_owned())
 }
 
-/// Delete an installation folder outright. The UI guards this with a confirm.
+/// Delete an installation folder. The UI guards this with a confirm.
+///
+/// A Quire-sized install is gigabytes, so removal takes many seconds. The
+/// folder is first RENAMED to a dot-prefixed tombstone (a same-volume metadata
+/// op, effectively instant), so it vanishes from the installations listing
+/// immediately; the real removal then grinds through the tombstone. If the
+/// rename fails (an open file locks the dir on Windows), fall back to deleting
+/// in place.
 pub fn delete(path: &Path) -> Result<(), String> {
     if !path.exists() {
         return Ok(());
     }
-    std::fs::remove_dir_all(path).map_err(|e| format!("delete failed: {e}"))
+    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let tomb = path.with_file_name(format!(".deleting-{name}"));
+    let target = if !tomb.exists() && std::fs::rename(path, &tomb).is_ok() {
+        tomb
+    } else {
+        path.to_path_buf()
+    };
+    std::fs::remove_dir_all(&target).map_err(|e| format!("delete failed: {e}"))
 }

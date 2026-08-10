@@ -134,6 +134,40 @@ type CuratorMeta = {
 };
 type PublisherStatus = { signed_in: boolean; playername: string | null; has_key: boolean; fingerprint: string | null };
 type Theme = "almanac" | "workshop" | "terminal";
+
+// ---- App EULA (shown before the login wall; acceptance version-stamped) ----
+// Bump the version only on MATERIAL changes: it re-prompts every user.
+const APP_EULA_VERSION = "1.0";
+const APP_EULA: { h: string; p: string }[] = [
+  {
+    h: "1. Independent project",
+    p: "Translocator is an independent, community-developed launcher by Lueken Good Design LLC. It is not affiliated with, endorsed by, sponsored by, or associated with Anego Studios or the Vintage Story development team. \"Vintage Story\" and related marks are trademarks of Anego Studios. All rights to the game, its assets, and its intellectual property belong to their respective owners. Mods remain the property of their authors.",
+  },
+  {
+    h: "2. What Translocator does",
+    p: "Translocator manages Vintage Story installations. It downloads official game binaries only from Anego Studios' official servers, and downloads mods only from the official Vintage Story Mod Database, always at the source, so download counts and statistics stay with the authors. Modpacks are manifests that reference mods by their official database entries; Translocator never re-hosts, bundles, or redistributes the game, its binaries, or any third-party mod. A Vintage Story account is required: signing in with it is the gate to using Translocator at all.",
+  },
+  {
+    h: "3. Optional optimized client (Optimum)",
+    p: "Translocator can invoke Optimum, an independent project by Zaldaryon, to build a performance-optimized client. That build happens entirely on this machine, from this machine's own game installation and from source repositories published by Anego Studios; nothing derived from it is ever uploaded or redistributed by Translocator. Optimum is separately licensed (GPL v3.0 with the Commons Clause) and presents its own notice; Translocator will show it to you and record your acceptance before Optimum is ever run on your behalf. Declining only means your installations run the standard client.",
+  },
+  {
+    h: "4. Your account and data",
+    p: "Your credentials are sent only to Vintage Story's official authentication servers, never to Translocator's operator or any third party. Your session is stored encrypted on this machine, tied to your Windows user account. Translocator collects no telemetry.",
+  },
+  {
+    h: "5. License",
+    p: "Translocator is proprietary software of Lueken Good Design LLC, provided free of charge for personal use. You may not sell, redistribute, or misrepresent the origin of Translocator. Publishing modpacks through Translocator does not transfer any rights in the referenced mods, which remain subject to their authors' licenses.",
+  },
+  {
+    h: "6. Disclaimer of warranty",
+    p: "THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER LIABILITY ARISING FROM THE USE OF THIS SOFTWARE. BACK UP YOUR WORLDS.",
+  },
+  {
+    h: "7. Acceptance",
+    p: "By proceeding, you acknowledge that you have read, understood, and agree to the terms above.",
+  },
+];
 type View = "installations" | "updates" | "mods" | "worlds" | "servers" | "market" | "pack" | "curator" | "account" | "settings";
 type Toast = { id: number; msg: string; undo?: () => void; ok?: boolean };
 
@@ -305,6 +339,8 @@ function App() {
 
   const [account, setAccount] = useState<Account | null>(null);
   const [authChecked, setAuthChecked] = useState(false);
+  // null = still reading the record; false = notice must be shown; true = clear.
+  const [appEulaOk, setAppEulaOk] = useState<boolean | null>(null);
   const [installs, setInstalls] = useState<InstallationCard[]>([]);
   const [editing, setEditing] = useState<InstallationCard | null>(null);
   const [draft, setDraft] = useState<InstallationMeta | null>(null);
@@ -409,6 +445,8 @@ function App() {
   // render and so cannot re-read the currently selected version itself.
   const [optimumTick, setOptimumTick] = useState(0);
   const [seedSettings, setSeedSettings] = useState(() => localStorage.getItem("tl-seed-settings") !== "0");
+  // First-launch Optimum card: shown once per machine, after login.
+  const [optimumOnboarded, setOptimumOnboarded] = useState(() => localStorage.getItem("tl-optimum-onboarded") === "1");
   const [backingUp, setBackingUp] = useState(false);
 
   const [view, setView] = useState<View>("installations");
@@ -470,6 +508,13 @@ function App() {
 
   useEffect(() => {
     (async () => {
+      // The notice gates everything, including the login form. A read error
+      // fails toward showing it again: re-consent is harmless, silence is not.
+      try {
+        setAppEulaOk((await invoke<string | null>("eula_status")) === APP_EULA_VERSION);
+      } catch {
+        setAppEulaOk(false);
+      }
       const acct = await invoke<Account | null>("get_account");
       if (acct) {
         setAccount(acct);
@@ -569,6 +614,29 @@ function App() {
       return n;
     });
 
+  // The auth server answers with wire codes ("invalidemailorpassword"); map
+  // them to the same human messages the game shows, plus one Translocator
+  // addition. Verified 2026-08-10: an account that signs into the website
+  // fine but owns no game copy gets this same "invalid" answer from
+  // /v2/gamelogin - the game's auth deliberately doesn't distinguish "no
+  // purchase" from "wrong password", so the message must cover both.
+  const LOGIN_REASONS: Record<string, string> = {
+    invalidemailorpassword:
+      "Invalid email or password - or this account doesn't own Vintage Story. Website, forum, and ModDB sign-ins work without a purchase, but the game login Translocator uses only accepts accounts with the game on them.",
+    missingemailorpassword: "Missing email or password.",
+    requirelogincode:
+      "New location detected: an access code was sent to your email. Re-enter your password and add the code.",
+    wronglogincode: "Invalid account access code. Try again, or request a new code after about 65 minutes.",
+    requiretotpcode: "Enter the access code from your authenticator app.",
+    wrongtotpcode: "Incorrect authenticator code. Please try again.",
+    ipchanged: "Your IP address changed during login (mobile/WiFi switch?). Please try again.",
+    blocked: "This IP address has been blocked by the account server. Contact Vintage Story support to unblock it.",
+    temporarilyblocked: "This IP address is temporarily blocked by the account server. Try again later.",
+    bruteforceprotected: "Over 10 failed attempts. Wait 20 minutes before trying again.",
+    cantconnect: "Could not reach the Vintage Story account server. Check your internet connection.",
+  };
+  const friendlyLoginReason = (r: string) => LOGIN_REASONS[r.trim().toLowerCase()] || r;
+
   async function doLogin() {
     setBusy(true);
     try {
@@ -586,7 +654,7 @@ function App() {
         say(`2FA required${res.reason ? `: ${res.reason}` : ""}. Enter your TOTP code.`);
       } else {
         say(`Login failed: ${res.reason}`);
-        toast(res.reason, undefined, false);
+        toast(friendlyLoginReason(res.reason), undefined, false);
       }
     } catch (e) {
       say(`Error: ${e}`);
@@ -1002,6 +1070,19 @@ function App() {
     }
   }
 
+  // The one-time Optimum choice. Either way the answer is recorded and the
+  // card never returns; Settings owns the toggle from here on.
+  async function chooseOptimumDefault(useIt: boolean) {
+    try {
+      await invoke("set_use_optimum", { enabled: useIt });
+    } catch (e) {
+      say(`Could not save the optimized-client choice: ${e}`);
+    }
+    localStorage.setItem("tl-optimum-onboarded", "1");
+    setOptimumOnboarded(true);
+    toast(useIt ? "Optimized client enabled. It builds in the background per game version." : "Using the standard client. Change anytime in Settings.");
+  }
+
   // Open the install-pack modal with sensible defaults: the pack's name, the
   // usual settings-seed source, optionals off until toggled.
   function openInstallPack() {
@@ -1324,15 +1405,23 @@ function App() {
 
   async function deleteInstallation(card: InstallationCard) {
     setConfirmDelete(null);
+    if (target === card.path) setTarget("");
+    toast(`Deleting ${card.meta.name}…`);
+    // The backend renames the folder out of the listing immediately, then
+    // grinds through the actual removal off-thread. Refresh once the rename
+    // has landed so the card vanishes right away; confirm again when the disk
+    // work truly finishes.
+    const done = invoke("delete_installation", { installationsDir, path: card.path });
+    setTimeout(() => { void refreshInstalls(); }, 350);
     try {
-      await invoke("delete_installation", { installationsDir, path: card.path });
+      await done;
       say(`Deleted installation ${card.meta.name}.`);
       toast(`Deleted ${card.meta.name}`);
-      if (target === card.path) setTarget("");
-      await refreshInstalls();
     } catch (e) {
       say(`Delete error: ${e}`);
+      toast(`Delete failed: ${e}`, undefined, false);
     }
+    await refreshInstalls();
   }
   async function refreshInstalled(installDir: string) {
     try {
@@ -1757,6 +1846,53 @@ function App() {
       </div>
     );
   };
+
+  // The END-USER NOTICE, ahead of even the login wall: first launch (or a
+  // materially changed notice) shows it once, acceptance is version-stamped.
+  if (appEulaOk !== true) {
+    return (
+      <div className="shell">
+        <WindowChrome />
+        <div className="wall">
+          {appEulaOk === false && (
+            <div className="wall-card eula-card">
+              <div className="wall-brand">
+                <img src={gearIcon} className="brand-gear" alt="" />
+                <div>
+                  <div className="wall-name">Translocator</div>
+                  <div className="muted">End-user notice and license agreement</div>
+                </div>
+              </div>
+              <div className="eula-scroll">
+                {APP_EULA.map((s) => (
+                  <div key={s.h}>
+                    <div className="eula-h">{s.h}</div>
+                    <p className="eula-p">{s.p}</p>
+                  </div>
+                ))}
+              </div>
+              <div className="acts">
+                <button className="btn" onClick={() => getCurrentWindow().close()}>Decline and close</button>
+                <button
+                  className="cta"
+                  onClick={async () => {
+                    try {
+                      await invoke("accept_app_eula", { version: APP_EULA_VERSION });
+                      setAppEulaOk(true);
+                    } catch (e) {
+                      toast(`Could not record acceptance: ${e}`, undefined, false);
+                    }
+                  }}
+                >
+                  I agree, continue
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
 
   // The login wall: with no stored account the launcher is the login form and
   // nothing else. No nav, no installations, no browsing. The backend refuses
@@ -2960,6 +3096,30 @@ function App() {
             <div className="acts">
               <button className="btn" disabled={!!versionProgress} onClick={() => setCreating(false)}>Cancel</button>
               <button className="cta" disabled={!createName.trim() || !createVersion || !!versionProgress} onClick={doCreate}>Create</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* first-launch Optimum card */}
+      {!optimumOnboarded && (
+        <div className="overlay">
+          <div className="modal wide">
+            <h3>A faster Vintage Story, built on your machine</h3>
+            <p className="muted" style={{ marginTop: -4 }}>
+              Translocator can use <b>Optimum</b>, a community project by Zaldaryon, to rebuild the game
+              with performance patches. The optimized client is built locally from your own game files,
+              one build per game version, and your installations then launch through it automatically,
+              with an automatic fall back to the standard client if a build ever misbehaves.
+            </p>
+            <p className="muted">
+              You'll review Optimum's own notice before its first build, and the build tools it needs are
+              set up privately inside Translocator's folder, no admin rights, nothing system-wide.
+              You can change this choice anytime in Settings.
+            </p>
+            <div className="acts">
+              <button className="btn" onClick={() => chooseOptimumDefault(false)}>Keep the standard client</button>
+              <button className="cta" onClick={() => chooseOptimumDefault(true)}>Use the optimized client (Recommended)</button>
             </div>
           </div>
         </div>

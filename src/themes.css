@@ -135,6 +135,14 @@ textarea{resize:vertical;min-height:64px}
 .wall-themes{display:flex;gap:6px;margin-top:20px}
 .wall-themes .mini{flex:1}
 .wall-themes .mini.sel{border-color:var(--accent);color:var(--accent-ink)}
+.eula-card{width:560px}
+.eula-card .acts{display:flex;gap:10px;justify-content:flex-end;margin-top:16px}
+.eula-card .acts .cta{width:auto}
+.eula-scroll{max-height:52vh;overflow-y:auto;border:1px solid var(--line);border-radius:var(--radius);background:var(--content-bg2);padding:14px 18px}
+.eula-h{font-family:var(--nm-font);font-size:13px;font-weight:700;color:var(--fg);margin:10px 0 3px}
+.eula-h:first-child{margin-top:0}
+.eula-scroll div:first-child .eula-h{margin-top:0}
+.eula-p{font-size:12.5px;color:var(--fg-muted);margin:0 0 8px;line-height:1.55}
 
 /* ---------- layout ---------- */
 .layout{height:100%;min-height:0;display:grid;grid-template-columns:238px 1fr;overflow:hidden;background:var(--content-bg)}
