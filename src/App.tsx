@@ -272,6 +272,19 @@ function WindowChrome() {
   );
 }
 
+type Prereqs = { dotnet: boolean; git: boolean; ilspycmd: boolean };
+type OptimumStatus = {
+  use_optimum: boolean;
+  eula_accepted: boolean;
+  eula_release: string | null;
+  prereqs: Prereqs;
+  package_state: "none" | "building" | "ready" | "failed" | "unsupported";
+  package_path: string | null;
+  detail: string | null;
+  release: string | null;
+};
+type EulaText = { release: string; text: string };
+
 function App() {
   const [gameExe, setGameExe] = useState(() => localStorage.getItem("tl-game-exe") || "");
   const [installationsDir, setInstallationsDir] = useState(() => localStorage.getItem("tl-installs") || "");
@@ -283,6 +296,7 @@ function App() {
   const [prelogintoken, setPrelogintoken] = useState<string | null>(null);
 
   const [account, setAccount] = useState<Account | null>(null);
+  const [authChecked, setAuthChecked] = useState(false);
   const [installs, setInstalls] = useState<InstallationCard[]>([]);
   const [editing, setEditing] = useState<InstallationCard | null>(null);
   const [draft, setDraft] = useState<InstallationMeta | null>(null);
@@ -365,6 +379,16 @@ function App() {
   const [createName, setCreateName] = useState("");
   const [createVersion, setCreateVersion] = useState("");
   const [cachedVersions, setCachedVersions] = useState<string[]>([]);
+
+  // Optimum: one optimized client package per game version, built locally.
+  const [optimum, setOptimum] = useState<OptimumStatus | null>(null);
+  const [optimumPhase, setOptimumPhase] = useState<string | null>(null);
+  const [eula, setEula] = useState<EulaText | null>(null);
+  const [eulaAgreed, setEulaAgreed] = useState(false);
+  const [eulaBusy, setEulaBusy] = useState(false);
+  // Bumped from the progress listener, whose closure is pinned to the first
+  // render and so cannot re-read the currently selected version itself.
+  const [optimumTick, setOptimumTick] = useState(0);
   const [seedSettings, setSeedSettings] = useState(() => localStorage.getItem("tl-seed-settings") !== "0");
   const [backingUp, setBackingUp] = useState(false);
 
@@ -391,39 +415,49 @@ function App() {
     if (installationsDir) localStorage.setItem("tl-installs", installationsDir);
   }, [installationsDir]);
 
+  // Everything that lives behind the login wall: paths, installations, versions.
+  // The backend refuses all of it while no account is stored, so it runs on
+  // startup only when a session was restored, and again right after a login.
+  // Paths come from localStorage rather than state so a login-time call never
+  // reads a stale closure.
+  async function bootstrapWorkspace() {
+    // Resolve first-run defaults for this machine (no hardcoded paths). Only
+    // fill blanks; a user's saved paths always win.
+    let dir = localStorage.getItem("tl-installs") || "";
+    let exe = localStorage.getItem("tl-game-exe") || "";
+    if (!dir || !exe) {
+      try {
+        const sp = await invoke<{ installations_dir: string; game_exe: string }>("suggested_paths");
+        if (!dir) { dir = sp.installations_dir; setInstallationsDir(dir); }
+        if (!exe) { exe = sp.game_exe; setGameExe(exe); }
+        say(`Using default paths for this machine.`);
+      } catch (e) {
+        say(`Could not resolve default paths: ${e}`);
+      }
+    }
+    const found = await refreshInstalls(dir);
+    // First run with nothing adopted yet: look for other launchers to import.
+    if (found === 0) {
+      try {
+        const dl = await invoke<DetectedLauncher[]>("detect_launchers");
+        setDetected(dl);
+        if (dl.length) say(`Detected ${dl.map((d) => `${d.count} from ${d.launcher}`).join(", ")}.`);
+      } catch (e) {
+        say(`Launcher detection error: ${e}`);
+      }
+    }
+    fetchVersions();
+  }
+
   useEffect(() => {
     (async () => {
       const acct = await invoke<Account | null>("get_account");
       if (acct) {
         setAccount(acct);
         say(`Restored session for ${acct.playername}.`);
+        await bootstrapWorkspace();
       }
-      // Resolve first-run defaults for this machine (no hardcoded paths). Only
-      // fill blanks; a user's saved paths always win.
-      let dir = installationsDir;
-      let exe = gameExe;
-      if (!dir || !exe) {
-        try {
-          const sp = await invoke<{ installations_dir: string; game_exe: string }>("suggested_paths");
-          if (!dir) { dir = sp.installations_dir; setInstallationsDir(dir); }
-          if (!exe) { exe = sp.game_exe; setGameExe(exe); }
-          say(`Using default paths for this machine.`);
-        } catch (e) {
-          say(`Could not resolve default paths: ${e}`);
-        }
-      }
-      const found = await refreshInstalls(dir);
-      // First run with nothing adopted yet: look for other launchers to import.
-      if (found === 0) {
-        try {
-          const dl = await invoke<DetectedLauncher[]>("detect_launchers");
-          setDetected(dl);
-          if (dl.length) say(`Detected ${dl.map((d) => `${d.count} from ${d.launcher}`).join(", ")}.`);
-        } catch (e) {
-          say(`Launcher detection error: ${e}`);
-        }
-      }
-      fetchVersions();
+      setAuthChecked(true);
     })();
     const un = listen<{ done: number; total: number }>("check-progress", (e) => setProgress(e.payload));
     const un2 = listen<{ modid: string; received: number; total: number }>("install-progress", (e) => {
@@ -434,16 +468,35 @@ function App() {
       const { version, phase, received, total } = e.payload;
       setVersionProgress({ version, phase, pct: total > 0 ? Math.min(100, (received / total) * 100) : -1 });
     });
+    const un4 = listen<{ version: string; phase: string; detail: string }>("optimum-progress", (e) => {
+      const { version, phase, detail } = e.payload;
+      if (phase === "done" || phase === "failed" || phase === "toolchain-done") {
+        setOptimumPhase(null);
+        say(detail);
+        toast(detail, undefined, phase !== "failed");
+        setOptimumTick((t) => t + 1);
+      } else if (phase === "fallback") {
+        say(`${version}: ${detail}`);
+        toast(detail, undefined, false);
+      } else {
+        setOptimumPhase(detail);
+      }
+    });
     return () => {
       un.then((f) => f());
       un2.then((f) => f());
       un3.then((f) => f());
+      un4.then((f) => f());
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   useEffect(() => {
     if (!target && installs.length) setTarget(installs[0].path);
   }, [installs, target]);
+  useEffect(() => {
+    if (account && view === "settings") refreshOptimum();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [account, view, gameVersion, optimumTick]);
   useEffect(() => {
     if (target) {
       refreshInstalled(target);
@@ -497,21 +550,29 @@ function App() {
         setTotp("");
         say(`Logged in as ${res.account.playername}.`);
         toast(`Signed in as ${res.account.playername}`);
+        await bootstrapWorkspace();
       } else if (res.status === "needsTotp") {
         setPrelogintoken(res.prelogintoken);
         say(`2FA required${res.reason ? `: ${res.reason}` : ""}. Enter your TOTP code.`);
       } else {
         say(`Login failed: ${res.reason}`);
+        toast(res.reason, undefined, false);
       }
     } catch (e) {
       say(`Error: ${e}`);
+      toast(`${e}`, undefined, false);
     } finally {
       setBusy(false);
     }
   }
   async function doLogout() {
-    await invoke("logout");
+    try {
+      await invoke("logout");
+    } catch (e) {
+      say(`Logout error: ${e}`);
+    }
     setAccount(null);
+    setView("installations");
     say("Logged out.");
   }
   async function refreshInstalls(dirOverride?: string): Promise<number> {
@@ -672,7 +733,7 @@ function App() {
       const res = await invoke<PlayResult>("connect_server", { gameExe, installDir, address, password: password || null });
       if (res.status === "needsRelogin") {
         say(`✗ Session rejected by server (${res.reason}). Re-login needed.`);
-        toast("Session expired. Sign in again on the Account screen.", undefined, false);
+        toast("Session expired. Sign in again to continue.", undefined, false);
         setAccount(null);
       } else {
         say(`■ ${inst?.meta.name ?? "Game"} exited (code ${res.exit_code}).`);
@@ -966,6 +1027,75 @@ function App() {
       say(`Remove version error: ${e}`);
     }
   }
+
+  // ---- Optimum -------------------------------------------------------------
+  async function refreshOptimum() {
+    try {
+      setOptimum(await invoke<OptimumStatus>("optimum_status", { version: gameVersion || null }));
+    } catch {
+      setOptimum(null); // signed out, or the wall said no: leave the panel quiet
+    }
+  }
+  async function installToolchain() {
+    setBusy(true);
+    setOptimumPhase("Preparing the build toolchain...");
+    try {
+      await invoke<Prereqs>("provision_toolchain");
+      say("Optimum build toolchain installed.");
+    } catch (e) {
+      say(`Toolchain error: ${e}`);
+      toast(`Toolchain install failed: ${e}`, undefined, false);
+    } finally {
+      setOptimumPhase(null);
+      setBusy(false);
+      refreshOptimum();
+    }
+  }
+  async function showEula() {
+    setEulaBusy(true);
+    setEulaAgreed(false);
+    try {
+      setEula(await invoke<EulaText>("optimum_eula", { version: gameVersion }));
+    } catch (e) {
+      say(`Optimum notice error: ${e}`);
+      toast(`Could not fetch Optimum's notice: ${e}`, undefined, false);
+    } finally {
+      setEulaBusy(false);
+    }
+  }
+  async function acceptEula() {
+    if (!eula) return;
+    try {
+      await invoke("accept_optimum_eula", { release: eula.release });
+      say(`Accepted the Optimum ${eula.release} end-user notice.`);
+      setEula(null);
+      await refreshOptimum();
+    } catch (e) {
+      toast(`Could not record acceptance: ${e}`, undefined, false);
+    }
+  }
+  async function optimizeNow() {
+    if (!gameVersion) return;
+    setOptimumPhase("Starting...");
+    try {
+      await invoke<string>("optimize_version", { version: gameVersion });
+    } catch (e) {
+      setOptimumPhase(null);
+      say(`Optimize error: ${e}`);
+      toast(`Optimization failed: ${e}`, undefined, false);
+    }
+    refreshOptimum();
+  }
+  async function toggleOptimum(on: boolean) {
+    setOptimum((o) => (o ? { ...o, use_optimum: on } : o));
+    try {
+      await invoke("set_use_optimum", { enabled: on });
+    } catch (e) {
+      toast(`Could not save that: ${e}`, undefined, false);
+      refreshOptimum();
+    }
+  }
+
   async function deleteInstallation(card: InstallationCard) {
     setConfirmDelete(null);
     try {
@@ -995,7 +1125,7 @@ function App() {
       const res = await invoke<PlayResult>("play", { gameExe, installDir: inst.path });
       if (res.status === "needsRelogin") {
         say(`✗ Session rejected by server (${res.reason}). Re-login needed.`);
-        toast("Session expired. Sign in again on the Account screen.", undefined, false);
+        toast("Session expired. Sign in again to continue.", undefined, false);
         setAccount(null);
       } else {
         say(`■ ${inst.meta.name} exited (code ${res.exit_code}).`);
@@ -1398,6 +1528,50 @@ function App() {
       </div>
     );
   };
+
+  // The login wall: with no stored account the launcher is the login form and
+  // nothing else. No nav, no installations, no browsing. The backend refuses
+  // every other command anyway, so there is no half-usable state to fall into.
+  // WindowChrome stays mounted or the frameless window cannot be dragged or
+  // closed from here.
+  if (!authChecked || !account) {
+    return (
+      <div className="shell">
+        <WindowChrome />
+        <div className="wall">
+          {authChecked && (
+            <div className="wall-card">
+              <div className="wall-brand">
+                <img src={gearIcon} className="brand-gear" alt="" />
+                <div>
+                  <div className="wall-name">Translocator</div>
+                  <div className="muted">Sign in with your Vintage Story account to continue.</div>
+                </div>
+              </div>
+              <form onSubmit={(e) => { e.preventDefault(); if (!busy) doLogin(); }}>
+                <label className="field"><span className="lab">Email</span><input type="email" autoComplete="username" autoFocus={!prelogintoken} value={email} onChange={(e) => setEmail(e.target.value)} /></label>
+                <label className="field"><span className="lab">Password</span><input type="password" autoComplete="current-password" value={password} onChange={(e) => setPassword(e.target.value)} /></label>
+                {prelogintoken && <label className="field"><span className="lab">2FA / TOTP code</span><input inputMode="numeric" autoComplete="one-time-code" autoFocus value={totp} onChange={(e) => setTotp(e.target.value)} /></label>}
+                <button className="cta" type="submit" disabled={busy}>{prelogintoken ? "Submit 2FA code" : "Log in"}</button>
+              </form>
+              <div className="wall-themes">
+                {THEMES.map((t) => (
+                  <button key={t.id} className={"mini" + (theme === t.id ? " sel" : "")} onClick={() => setTheme(t.id)} title={t.desc}>{t.name}</button>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+        <div className="toasts">
+          {toasts.map((t) => (
+            <div className="toast" key={t.id}>
+              <span className="toast-msg">{t.ok !== false ? "\u2713 " : ""}{t.msg}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="shell">
@@ -2169,20 +2343,9 @@ function App() {
             <>
               <div className="topbar"><div><div className="eyebrow">Vintage Story</div><h1 className="title">Account</h1></div></div>
               <div className="view" style={{ maxWidth: 420 }}>
-                {account ? (
-                  <>
-                    <p>Signed in as <b>{account.playername}</b>.</p>
-                    <p className="muted">Your session is saved and carried into every installation at launch. No re-login.</p>
-                    <button className="btn" onClick={doLogout}>Log out</button>
-                  </>
-                ) : (
-                  <form onSubmit={(e) => { e.preventDefault(); if (!busy) doLogin(); }}>
-                    <label className="field"><span className="lab">Email</span><input type="email" autoComplete="username" value={email} onChange={(e) => setEmail(e.target.value)} /></label>
-                    <label className="field"><span className="lab">Password</span><input type="password" autoComplete="current-password" value={password} onChange={(e) => setPassword(e.target.value)} /></label>
-                    {prelogintoken && <label className="field"><span className="lab">2FA / TOTP code</span><input inputMode="numeric" autoComplete="one-time-code" autoFocus value={totp} onChange={(e) => setTotp(e.target.value)} /></label>}
-                    <button className="cta" type="submit" disabled={busy}>{prelogintoken ? "Submit 2FA code" : "Log in"}</button>
-                  </form>
-                )}
+                <p>Signed in as <b>{account.playername}</b>.</p>
+                <p className="muted">Your session is saved and carried into every installation at launch. No re-login.</p>
+                <button className="btn" onClick={doLogout}>Log out</button>
               </div>
             </>
           )}
@@ -2229,6 +2392,68 @@ function App() {
                 </div>
 
                 <div className="field">
+                  <span className="lab">Optimized client <span className="lab-hint">(Optimum by Zaldaryon, built on this machine)</span></span>
+                  {!optimum ? (
+                    <p className="muted">Checking…</p>
+                  ) : (
+                    <>
+                      <label className="field row-check">
+                        <input type="checkbox" checked={optimum.use_optimum} onChange={(e) => toggleOptimum(e.target.checked)} />
+                        <span>Launch the optimized client when a package is ready for the installation's version</span>
+                      </label>
+                      <p className="muted">
+                        Optimum decompiles your own copy of the game, applies performance patches, and recompiles it locally.
+                        Nothing is downloaded from us and nothing leaves your machine. Installations always fall back to the
+                        vanilla client if anything goes wrong.
+                      </p>
+                      <div className="list">
+                        <div className="li">
+                          <span><span className="nm">Prerequisites</span> <span className="meta">
+                            {[
+                              `${optimum.prereqs.dotnet ? "✓" : "✗"} .NET 10 SDK`,
+                              `${optimum.prereqs.git ? "✓" : "✗"} Git`,
+                              `${optimum.prereqs.ilspycmd ? "✓" : "✗"} ilspycmd`,
+                            ].join("   ")}
+                          </span></span>
+                          {!(optimum.prereqs.dotnet && optimum.prereqs.git && optimum.prereqs.ilspycmd) && (
+                            <button className="mini" disabled={busy} onClick={installToolchain} title="Installs into Translocator's own folder. No admin rights, no changes to your system PATH.">Install toolchain</button>
+                          )}
+                        </div>
+                        <div className="li">
+                          <span><span className="nm">End-user notice</span> <span className="meta">
+                            {optimum.eula_accepted ? `accepted (${optimum.eula_release})` : "not accepted yet"}
+                          </span></span>
+                          <button className="mini" disabled={eulaBusy || !gameVersion} onClick={showEula}>
+                            {optimum.eula_accepted ? "Read again" : "Read and accept"}
+                          </button>
+                        </div>
+                        <div className="li">
+                          <span><span className="nm">{gameVersion || "No version selected"}</span> <span className="meta">
+                            {optimum.package_state === "ready" && "optimized package ready"}
+                            {optimum.package_state === "building" && "building…"}
+                            {optimum.package_state === "none" && "not built yet"}
+                            {optimum.package_state === "failed" && "last build failed"}
+                            {optimum.package_state === "unsupported" && "no matching Optimum release yet"}
+                          </span></span>
+                          {optimum.package_state !== "ready" && optimum.package_state !== "building" && (
+                            <button
+                              className="mini"
+                              disabled={busy || !gameVersion || !optimum.eula_accepted || !(optimum.prereqs.dotnet && optimum.prereqs.git && optimum.prereqs.ilspycmd)}
+                              title={!optimum.eula_accepted ? "Read and accept Optimum's notice first" : "Takes several minutes and needs a network connection"}
+                              onClick={optimizeNow}
+                            >
+                              {optimum.package_state === "failed" ? "Retry" : "Optimize now"}
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                      {optimum.detail && <p className="muted">{optimum.detail}</p>}
+                      {optimumPhase && <pre className="logbox">{optimumPhase}</pre>}
+                    </>
+                  )}
+                </div>
+
+                <div className="field">
                   <span className="lab">Theme</span>
                   <div className="themes">
                     {THEMES.map((t) => (
@@ -2250,6 +2475,25 @@ function App() {
           )}
         </div>
       </div>
+
+      {/* Optimum end-user notice. The silent installer skips its own dialog, so
+          this is the only place consent can be given, and no build runs without it. */}
+      {eula && (
+        <div className="overlay" onClick={() => setEula(null)}>
+          <div className="modal wide" onClick={(e) => e.stopPropagation()}>
+            <h3>Optimum {eula.release} end-user notice</h3>
+            <pre className="logbox" style={{ maxHeight: 320, whiteSpace: "pre-wrap" }}>{eula.text}</pre>
+            <label className="field row-check">
+              <input type="checkbox" checked={eulaAgreed} onChange={(e) => setEulaAgreed(e.target.checked)} />
+              <span>I have read and agree to these terms</span>
+            </label>
+            <div className="acts">
+              <button className="btn" onClick={() => setEula(null)}>Cancel</button>
+              <button className="cta" disabled={!eulaAgreed} onClick={acceptEula}>Accept and continue</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* confirm restore modal */}
       {confirmRestore && (

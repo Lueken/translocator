@@ -16,6 +16,7 @@ mod launch;
 mod migrate;
 mod models;
 mod mods;
+mod optimum;
 mod servers;
 mod session;
 mod signing;
@@ -28,6 +29,24 @@ use models::{Account, AccountView};
 use serde::Serialize;
 use std::path::PathBuf;
 use tauri::{AppHandle, Manager};
+
+/// The login wall. Every command outside the pre-auth set (`login`,
+/// `get_account`, `suggested_paths`) refuses until an account is stored, so a
+/// hidden UI is never the only thing keeping a locked launcher locked. "Signed
+/// in" means a stored session exists, NOT that the account server can be
+/// reached right now.
+const LOGIN_REQUIRED: &str = "Sign in with your Vintage Story account to use Translocator.";
+
+/// The stored account, or the wall's error. For commands that need the account
+/// itself.
+fn require_account(app: &AppHandle) -> Result<Account, String> {
+    store::load_account(app).ok_or_else(|| LOGIN_REQUIRED.to_string())
+}
+
+/// The same wall as a bare gate, for commands that only need to sit behind it.
+fn require_login(app: &AppHandle) -> Result<(), String> {
+    require_account(app).map(|_| ())
+}
 
 /// Result of a login attempt, tagged for the frontend.
 #[derive(Serialize)]
@@ -88,6 +107,7 @@ fn get_account(app: AppHandle) -> Option<AccountView> {
 /// a custom scheme handler.
 #[tauri::command]
 fn open_url(app: AppHandle, url: String) -> Result<(), String> {
+    require_login(&app)?;
     if !(url.starts_with("https://") || url.starts_with("http://")) {
         return Err("refused to open a non-web URL".into());
     }
@@ -98,6 +118,7 @@ fn open_url(app: AppHandle, url: String) -> Result<(), String> {
 /// Forget the persisted account.
 #[tauri::command]
 fn logout(app: AppHandle) -> Result<(), String> {
+    require_login(&app)?;
     store::clear_account(&app)
 }
 
@@ -106,22 +127,30 @@ fn logout(app: AppHandle) -> Result<(), String> {
 /// folder that has no metadata yet.
 #[tauri::command]
 fn list_installations(
+    app: AppHandle,
     installations_dir: String,
     default_version: String,
 ) -> Result<Vec<installations::InstallationCard>, String> {
+    require_login(&app)?;
     installations::list(&PathBuf::from(installations_dir), &default_version)
 }
 
 /// Persist edited installation metadata (rename, params, env, backup prefs,
 /// favorite, icon).
 #[tauri::command]
-fn save_installation(path: String, meta: installations::InstallationMeta) -> Result<(), String> {
+fn save_installation(
+    app: AppHandle,
+    path: String,
+    meta: installations::InstallationMeta,
+) -> Result<(), String> {
+    require_login(&app)?;
     installations::write_meta(&PathBuf::from(path), &meta)
 }
 
 /// Delete an installation folder. The UI confirms first.
 #[tauri::command]
-fn delete_installation(installations_dir: String, path: String) -> Result<(), String> {
+fn delete_installation(app: AppHandle, installations_dir: String, path: String) -> Result<(), String> {
+    require_login(&app)?;
     let dir = PathBuf::from(&path);
     // Containment: only ever remove a real installation that lives directly
     // inside the configured installations folder, never an arbitrary path handed
@@ -137,6 +166,7 @@ fn delete_installation(installations_dir: String, path: String) -> Result<(), St
 /// Reveal an installation's folder in the OS file browser.
 #[tauri::command]
 fn open_install_folder(app: AppHandle, path: String) -> Result<(), String> {
+    require_login(&app)?;
     use tauri_plugin_opener::OpenerExt;
     app.opener().open_path(path, None::<&str>).map_err(|e| e.to_string())
 }
@@ -153,6 +183,7 @@ fn create_installation(
     version: String,
     seed_from: Option<String>,
 ) -> Result<String, String> {
+    require_login(&app)?;
     use tauri::Manager;
     let path = installations::create(&PathBuf::from(&installations_dir), &name, &version)?;
     if let Some(src) = seed_from {
@@ -175,26 +206,103 @@ fn create_installation(
 /// flagged if already cached.
 #[tauri::command]
 async fn list_available_versions(app: AppHandle) -> Result<Vec<versions::AvailableVersion>, String> {
+    require_login(&app)?;
     versions::fetch_available(&app).await
 }
 
 /// Cached version strings (downloaded + installed).
 #[tauri::command]
-fn list_cached_versions(app: AppHandle) -> Vec<String> {
-    versions::list_cached(&app)
+fn list_cached_versions(app: AppHandle) -> Result<Vec<String>, String> {
+    require_login(&app)?;
+    Ok(versions::list_cached(&app))
 }
 
 /// Ensure a version is in the cache (download + silent install if needed).
 /// Emits "version-progress". Returns the cached exe path.
 #[tauri::command]
 async fn ensure_version(app: AppHandle, version: String, url: String, md5: String) -> Result<String, String> {
-    versions::ensure_version(&app, &version, &url, &md5).await
+    require_login(&app)?;
+    let exe = versions::ensure_version(&app, &version, &url, &md5).await?;
+    // Optimization is a background sibling of the vanilla install, never a
+    // dependency of it: this returns the vanilla exe immediately either way.
+    optimum::maybe_autobuild(&app, &version);
+    Ok(exe)
 }
 
-/// Remove a cached version's binaries.
+/// Remove a cached version's binaries, and the Optimum package built from them
+/// (a full second copy of the game that has nothing left to optimize).
 #[tauri::command]
 fn remove_version(app: AppHandle, version: String) -> Result<(), String> {
+    require_login(&app)?;
+    optimum::remove_package(&app, &version);
     versions::remove_cached(&app, &version)
+}
+
+// ---- Optimum (optimized client packages, one per game version) ----
+
+/// Everything the Settings panel needs for one version: consent, prerequisites,
+/// and whether a package exists. Cheap enough to call on view changes.
+#[tauri::command]
+async fn optimum_status(app: AppHandle, version: Option<String>) -> Result<optimum::OptimumStatus, String> {
+    require_login(&app)?;
+    Ok(optimum::status(&app, version.as_deref()).await)
+}
+
+/// Optimum's end-user notice, read out of the release that would be built.
+/// Downloading the release is not invoking it, so this runs before consent.
+#[tauri::command]
+async fn optimum_eula(app: AppHandle, version: String) -> Result<optimum::EulaText, String> {
+    require_login(&app)?;
+    optimum::eula(&app, &version).await
+}
+
+/// Record that the user accepted the notice for a given Optimum release. No
+/// build ever runs before this exists.
+#[tauri::command]
+fn accept_optimum_eula(app: AppHandle, release: String) -> Result<(), String> {
+    require_login(&app)?;
+    optimum::accept_eula(&app, &release)
+}
+
+/// Turn the optimized launch path on or off. Stored backend-side because `play`
+/// is what reads it.
+#[tauri::command]
+fn set_use_optimum(app: AppHandle, enabled: bool) -> Result<(), String> {
+    require_login(&app)?;
+    optimum::set_use_optimum(&app, enabled)
+}
+
+/// Install the missing build prerequisites into Translocator's own app data
+/// (.NET 10 SDK, portable Git, ilspycmd). No admin, no system PATH changes.
+#[tauri::command]
+async fn provision_toolchain(app: AppHandle) -> Result<optimum::Prereqs, String> {
+    require_login(&app)?;
+    optimum::provision(&app).await
+}
+
+/// Build the optimized package for a version. Emits "optimum-progress".
+///
+/// This is the one place the login wall becomes a live check rather than a
+/// stored-session check: a build is done on behalf of an account that owns the
+/// game, so the account server must answer and answer yes.
+#[tauri::command]
+async fn optimize_version(app: AppHandle, version: String) -> Result<String, String> {
+    let account = require_account(&app)?;
+    match auth::client_validate(&account.uid, &account.sessionkey).await {
+        Ok(v) if v.valid == 1 => {}
+        Ok(v) => {
+            return Err(format!(
+                "Your Vintage Story session is no longer valid ({}). Sign in again to build the optimized client.",
+                v.reason.unwrap_or_else(|| "nosession".into())
+            ))
+        }
+        Err(e) => {
+            return Err(format!(
+                "Could not reach the Vintage Story account server, which is required before building the optimized client: {e}"
+            ))
+        }
+    }
+    optimum::optimize(&app, &version).await
 }
 
 /// Result of a play attempt.
@@ -226,11 +334,31 @@ async fn play_inner(
         None => return Ok(PlayResult::NeedsRelogin { reason: "not signed in".into() }),
     };
     // 1. Validate the stored session with the account server BEFORE trusting it.
-    let v = auth::client_validate(&account.uid, &account.sessionkey).await?;
-    if v.valid != 1 {
-        return Ok(PlayResult::NeedsRelogin {
-            reason: v.reason.unwrap_or_else(|| "nosession".into()),
-        });
+    //    Two outcomes that must never be conflated, the same distinction the game
+    //    itself draws between a Bad session and being Offline:
+    //      - the server answered and refused us (valid != 1): the session is dead
+    //        server-side and only a fresh login fixes it.
+    //      - the call itself failed (Err = request or parse error): the account
+    //        server is unreachable. Offline single player never needed it, so
+    //        launch anyway with the stored session.
+    //    Multiplayer is the exception: joining a server needs a live mptoken from
+    //    this same auth server, so with a connect target unreachable stays a hard
+    //    failure instead of a silent single-player launch.
+    match auth::client_validate(&account.uid, &account.sessionkey).await {
+        Ok(v) if v.valid == 1 => {}
+        Ok(v) => {
+            return Ok(PlayResult::NeedsRelogin {
+                reason: v.reason.unwrap_or_else(|| "nosession".into()),
+            });
+        }
+        Err(e) if connect.is_some() => {
+            return Err(format!(
+                "Could not reach the Vintage Story account server, which is required to join a multiplayer server: {e}"
+            ));
+        }
+        Err(e) => {
+            eprintln!("clientvalidate unreachable ({e}); launching offline with the stored session");
+        }
     }
 
     let dir = PathBuf::from(&install_dir);
@@ -239,13 +367,22 @@ async fn play_inner(
     // Resolve the game binary: prefer our cached copy for the install's pinned
     // version; fall back to the caller-provided exe (e.g. an existing VS
     // Launcher binary) so already-set-up installs keep working.
-    let exe = if !meta.version.is_empty() {
+    let vanilla_exe = if !meta.version.is_empty() {
         versions::exe_path(&app, &meta.version)
             .map(|p| p.to_string_lossy().into_owned())
             .unwrap_or(game_exe)
     } else {
         game_exe
     };
+    // Prefer the optimized package built for this version, if one exists and the
+    // user hasn't opted out. Never the Vintagestory.exe INSIDE that package: its
+    // Mods folder holds patched built-in mods that only Optimum's engine expects.
+    let optimized = if !meta.version.is_empty() && optimum::enabled(&app) {
+        optimum::package_exe(&app, &meta.version).map(|p| p.to_string_lossy().into_owned())
+    } else {
+        None
+    };
+    let exe = optimized.clone().unwrap_or_else(|| vanilla_exe.clone());
     if !std::path::Path::new(&exe).exists() {
         return Err(format!(
             "Game {} isn't installed. Open this installation's settings to download it.",
@@ -273,7 +410,7 @@ async fn play_inner(
         }
     }
     let started = std::time::Instant::now();
-    let exit_code = launch::launch_and_wait(
+    let mut exit_code = launch::launch_and_wait(
         &exe,
         &dir,
         Some(&meta.start_params),
@@ -281,7 +418,29 @@ async fn play_inner(
         &extra,
     )
     .await?;
-    installations::record_play(&dir, started.elapsed().as_secs());
+    let mut elapsed = started.elapsed().as_secs();
+
+    // An optimized launch that dies immediately is a patch abort, not a play
+    // session: Optimum restores its vanilla backups and exits without starting
+    // the game, so there is nothing to salvage but plenty to fall back to.
+    if optimized.is_some() {
+        if let Some(reason) = optimum::should_fall_back(&dir, exit_code, elapsed) {
+            eprintln!("optimized launch aborted for {}: {reason}", meta.version);
+            optimum::mark_needs_rebuild(&app, &meta.version, &reason);
+            optimum::notify_fallback(&app, &meta.version, &reason);
+            let retry = std::time::Instant::now();
+            exit_code = launch::launch_and_wait(
+                &vanilla_exe,
+                &dir,
+                Some(&meta.start_params),
+                Some(&meta.env_vars),
+                &extra,
+            )
+            .await?;
+            elapsed = retry.elapsed().as_secs();
+        }
+    }
+    installations::record_play(&dir, elapsed);
 
     // 4. Read back the session the game left behind. If it rotated, capture and
     //    persist it so we never re-stamp a stale key on the next launch.
@@ -315,6 +474,7 @@ async fn play_inner(
 /// frontend just to launch.
 #[tauri::command]
 async fn play(app: AppHandle, game_exe: String, install_dir: String) -> Result<PlayResult, String> {
+    require_login(&app)?;
     play_inner(app, game_exe, install_dir, None).await
 }
 
@@ -328,6 +488,7 @@ async fn connect_server(
     address: String,
     password: Option<String>,
 ) -> Result<PlayResult, String> {
+    require_login(&app)?;
     play_inner(app, game_exe, install_dir, Some((address, password))).await
 }
 
@@ -335,30 +496,35 @@ async fn connect_server(
 /// the game's own server browser after launch (the "Add to installation" action).
 #[tauri::command]
 fn add_server_to_install(
+    app: AppHandle,
     install_dir: String,
     name: String,
     address: String,
     password: Option<String>,
 ) -> Result<(), String> {
+    require_login(&app)?;
     session::add_multiplayer_server(&PathBuf::from(install_dir), &name, &address, password.as_deref())
 }
 
 /// Text-search ModDB (most-downloaded first).
 #[tauri::command]
-async fn search_mods(text: String) -> Result<Vec<mods::ModSummary>, String> {
+async fn search_mods(app: AppHandle, text: String) -> Result<Vec<mods::ModSummary>, String> {
+    require_login(&app)?;
     mods::search(&text).await
 }
 
 /// Download a mod's latest release into the install's Mods folder.
 #[tauri::command]
 async fn install_mod(app: AppHandle, install_dir: String, modidstr: String) -> Result<String, String> {
+    require_login(&app)?;
     mods::install_latest(&app, &PathBuf::from(install_dir), &modidstr).await
 }
 
 /// Author donation link(s) for a mod - the structured `donateurl` field if the
 /// API exposes it, otherwise parsed from the description. Reference-only.
 #[tauri::command]
-async fn mod_donations(modidstr: String) -> Result<Vec<String>, String> {
+async fn mod_donations(app: AppHandle, modidstr: String) -> Result<Vec<String>, String> {
+    require_login(&app)?;
     mods::get_donations(&modidstr).await
 }
 
@@ -370,6 +536,7 @@ async fn check_updates(
     install_dir: String,
     game_version: String,
 ) -> Result<Vec<updates::ModUpdate>, String> {
+    require_login(&app)?;
     updates::check_updates(&app, &PathBuf::from(install_dir), &game_version).await
 }
 
@@ -382,6 +549,7 @@ async fn install_release(
     modversion: String,
     old_filename: Option<String>,
 ) -> Result<String, String> {
+    require_login(&app)?;
     mods::install_release(
         &app,
         &PathBuf::from(install_dir),
@@ -395,7 +563,8 @@ async fn install_release(
 /// Required dependencies of an installed mod zip that are missing from the
 /// install (parsed from modinfo.json; skips the base game).
 #[tauri::command]
-fn check_deps(install_dir: String, filename: String) -> Result<Vec<deps::MissingDep>, String> {
+fn check_deps(app: AppHandle, install_dir: String, filename: String) -> Result<Vec<deps::MissingDep>, String> {
+    require_login(&app)?;
     let base = PathBuf::from(&install_dir);
     let zip = base.join("Mods").join(&filename);
     Ok(deps::check_missing_deps(&base, &zip))
@@ -403,7 +572,8 @@ fn check_deps(install_dir: String, filename: String) -> Result<Vec<deps::Missing
 
 /// Zip filenames currently in an install's Mods folder.
 #[tauri::command]
-fn list_mod_files(install_dir: String) -> Result<Vec<String>, String> {
+fn list_mod_files(app: AppHandle, install_dir: String) -> Result<Vec<String>, String> {
+    require_login(&app)?;
     Ok(mods::list_mod_files(&PathBuf::from(install_dir)))
 }
 
@@ -411,7 +581,8 @@ fn list_mod_files(install_dir: String) -> Result<Vec<String>, String> {
 /// the backup id. Called before applying mod updates (fast, mods-only). Runs off
 /// the UI thread.
 #[tauri::command]
-async fn backup_mods(install_dir: String) -> Result<String, String> {
+async fn backup_mods(app: AppHandle, install_dir: String) -> Result<String, String> {
+    require_login(&app)?;
     tokio::task::spawn_blocking(move || backup::backup_mods(&PathBuf::from(install_dir)))
         .await
         .map_err(|e| format!("backup task failed: {e}"))?
@@ -421,7 +592,8 @@ async fn backup_mods(install_dir: String) -> Result<String, String> {
 /// backup at the given level, pruned to `keep`. Heavy (gigabytes), so it runs on
 /// a blocking thread to keep the UI responsive. Returns the backup id.
 #[tauri::command]
-async fn backup_install(install_dir: String, compression: u8, keep: u8) -> Result<String, String> {
+async fn backup_install(app: AppHandle, install_dir: String, compression: u8, keep: u8) -> Result<String, String> {
+    require_login(&app)?;
     tokio::task::spawn_blocking(move || {
         backup::backup_install(&PathBuf::from(install_dir), compression, keep as usize)
     })
@@ -431,14 +603,16 @@ async fn backup_install(install_dir: String, compression: u8, keep: u8) -> Resul
 
 /// All backups for an install, newest-first.
 #[tauri::command]
-fn list_backups(install_dir: String) -> Result<Vec<backup::BackupInfo>, String> {
+fn list_backups(app: AppHandle, install_dir: String) -> Result<Vec<backup::BackupInfo>, String> {
+    require_login(&app)?;
     Ok(backup::list_backups(&PathBuf::from(install_dir)))
 }
 
 /// Restore a snapshot (Mods folder, or the whole install for a full backup).
 /// Runs off the UI thread since a full restore can be large.
 #[tauri::command]
-async fn restore_backup(install_dir: String, id: String) -> Result<(), String> {
+async fn restore_backup(app: AppHandle, install_dir: String, id: String) -> Result<(), String> {
+    require_login(&app)?;
     tokio::task::spawn_blocking(move || backup::restore_backup(&PathBuf::from(install_dir), &id))
         .await
         .map_err(|e| format!("restore task failed: {e}"))?
@@ -484,12 +658,14 @@ fn suggested_paths(app: AppHandle) -> SuggestedPaths {
 /// this launcher's version when the caller leaves it blank.
 #[tauri::command]
 async fn curate_pack(
+    app: AppHandle,
     install_dir: String,
     mut pack: manifest::ManifestPack,
     server: Option<manifest::ManifestServer>,
     links: Option<manifest::ManifestLinks>,
     override_paths: Vec<String>,
 ) -> Result<curator::CuratorPreview, String> {
+    require_login(&app)?;
     if pack.min_launcher_version.trim().is_empty() {
         pack.min_launcher_version = env!("CARGO_PKG_VERSION").to_string();
     }
@@ -512,7 +688,8 @@ struct PublisherStatus {
 /// What the curator UI needs to render the publish section: who we'd publish
 /// as, and whether this machine has a signing key yet. Never creates a key.
 #[tauri::command]
-fn publisher_status(app: AppHandle) -> PublisherStatus {
+fn publisher_status(app: AppHandle) -> Result<PublisherStatus, String> {
+    require_login(&app)?;
     // The pre-VS-account bearer token is obsolete; scrub it if this machine
     // still has one from the earlier flow.
     let _ = store::remove_sealed(&app, "publisher.dat");
@@ -523,12 +700,12 @@ fn publisher_status(app: AppHandle) -> PublisherStatus {
     } else {
         None
     };
-    PublisherStatus {
+    Ok(PublisherStatus {
         signed_in: account.is_some(),
         playername: account.map(|a| a.playername),
         has_key,
         fingerprint,
-    }
+    })
 }
 
 /// Register this device's signing key to the signed-in VS account:
@@ -537,7 +714,7 @@ fn publisher_status(app: AppHandle) -> PublisherStatus {
 /// Idempotent; safe to call before every first publish from a machine.
 #[tauri::command]
 async fn register_publisher(app: AppHandle, hub_url: String) -> Result<serde_json::Value, String> {
-    let account = store::load_account(&app).ok_or("Sign in to your Vintage Story account first.")?;
+    let account = require_account(&app)?;
     let key = signing::load_or_create_key(&app)?;
     let base = hub_url.trim_end_matches('/').to_string();
     let client = reqwest::Client::new();
@@ -583,7 +760,7 @@ async fn register_publisher(app: AppHandle, hub_url: String) -> Result<serde_jso
 /// digest AND the wire envelope, so the Hub canonicalizes identical bytes.
 #[tauri::command]
 async fn publish_pack(app: AppHandle, hub_url: String, manifest: manifest::Manifest) -> Result<String, String> {
-    let account = store::load_account(&app).ok_or("Sign in to your Vintage Story account first.")?;
+    let account = require_account(&app)?;
     let key = signing::load_or_create_key(&app)?;
     let value = serde_json::to_value(&manifest).map_err(|e| format!("manifest serialize failed: {e}"))?;
     let payload = signing::signing_payload(&value, &account.uid)?;
@@ -593,69 +770,83 @@ async fn publish_pack(app: AppHandle, hub_url: String, manifest: manifest::Manif
 
 /// `ModConfig/*.json` files in an install, as override candidates for the curator.
 #[tauri::command]
-fn list_config_files(install_dir: String) -> Vec<String> {
-    curator::list_config_files(&PathBuf::from(install_dir))
+fn list_config_files(app: AppHandle, install_dir: String) -> Result<Vec<String>, String> {
+    require_login(&app)?;
+    Ok(curator::list_config_files(&PathBuf::from(install_dir)))
 }
 
 /// Browse published packs on the Hub (the Market list).
 #[tauri::command]
-async fn hub_list_packs(hub_url: String) -> Result<Vec<hub::PackSummary>, String> {
+async fn hub_list_packs(app: AppHandle, hub_url: String) -> Result<Vec<hub::PackSummary>, String> {
+    require_login(&app)?;
     hub::list_packs(&hub_url).await
 }
 
 /// Full record for one pack (the Pack page header).
 #[tauri::command]
-async fn hub_pack(hub_url: String, id: String) -> Result<serde_json::Value, String> {
+async fn hub_pack(app: AppHandle, hub_url: String, id: String) -> Result<serde_json::Value, String> {
+    require_login(&app)?;
     hub::pack_detail(&hub_url, &id).await
 }
 
 /// A pack's manifest (latest, or a pinned version), for its mod + override list.
 #[tauri::command]
 async fn hub_pack_manifest(
+    app: AppHandle,
     hub_url: String,
     id: String,
     version: Option<String>,
 ) -> Result<manifest::Manifest, String> {
+    require_login(&app)?;
     hub::pack_manifest(&hub_url, &id, version.as_deref()).await
 }
 
 /// The Vintage Story masterserver public server list (the Servers > Public tab).
 #[tauri::command]
-async fn list_public_servers() -> Result<Vec<servers::PublicServer>, String> {
+async fn list_public_servers(app: AppHandle) -> Result<Vec<servers::PublicServer>, String> {
+    require_login(&app)?;
     servers::list_public_servers().await
 }
 
 /// The user's saved private servers (the Servers > Private tab).
 #[tauri::command]
-fn list_private_servers(app: AppHandle) -> Vec<servers::PrivateServer> {
-    servers::list_private(&app)
+fn list_private_servers(app: AppHandle) -> Result<Vec<servers::PrivateServer>, String> {
+    require_login(&app)?;
+    Ok(servers::list_private(&app))
 }
 
 /// Add or update a saved private server; returns the refreshed list.
 #[tauri::command]
 fn save_private_server(app: AppHandle, server: servers::PrivateServer) -> Result<Vec<servers::PrivateServer>, String> {
+    require_login(&app)?;
     servers::upsert_private(&app, server)
 }
 
 /// Remove a saved private server by id; returns the refreshed list.
 #[tauri::command]
 fn remove_private_server(app: AppHandle, id: String) -> Result<Vec<servers::PrivateServer>, String> {
+    require_login(&app)?;
     servers::remove_private(&app, &id)
 }
 
 /// Installations folders belonging to other launchers (VS Launcher, StoryForge)
 /// found on this machine, so the user can point at one and adopt in place.
 #[tauri::command]
-fn detect_launchers(app: AppHandle) -> Vec<migrate::DetectedLauncher> {
-    migrate::detect(&app)
+fn detect_launchers(app: AppHandle) -> Result<Vec<migrate::DetectedLauncher>, String> {
+    require_login(&app)?;
+    Ok(migrate::detect(&app))
 }
 
 /// Seed translocator.json for un-adopted installs in `installations_dir` from the
 /// managing launcher's config (version, params, playtime, ...). Non-destructive;
 /// never touches game data or copies a session. Returns how many were enriched.
 #[tauri::command]
-fn import_from_launcher(app: AppHandle, installations_dir: String) -> migrate::ImportResult {
-    migrate::import_from_launcher(&app, &PathBuf::from(installations_dir))
+fn import_from_launcher(
+    app: AppHandle,
+    installations_dir: String,
+) -> Result<migrate::ImportResult, String> {
+    require_login(&app)?;
+    Ok(migrate::import_from_launcher(&app, &PathBuf::from(installations_dir)))
 }
 
 /// Every world in an installation's `Saves` folder, with parsed metadata (seed,
@@ -663,7 +854,8 @@ fn import_from_launcher(app: AppHandle, installations_dir: String) -> migrate::I
 /// savegame blobs is fast even for large worlds, but runs off the UI thread so a
 /// folder of many worlds never stutters.
 #[tauri::command]
-async fn list_worlds(install_dir: String) -> Result<Vec<worlds::WorldInfo>, String> {
+async fn list_worlds(app: AppHandle, install_dir: String) -> Result<Vec<worlds::WorldInfo>, String> {
+    require_login(&app)?;
     tokio::task::spawn_blocking(move || worlds::list_worlds(&PathBuf::from(install_dir)))
         .await
         .map_err(|e| format!("worlds task failed: {e}"))
@@ -671,7 +863,8 @@ async fn list_worlds(install_dir: String) -> Result<Vec<worlds::WorldInfo>, Stri
 
 /// Copy a single world into the install's backup folder; returns the copy's path.
 #[tauri::command]
-async fn backup_world(install_dir: String, world_path: String) -> Result<String, String> {
+async fn backup_world(app: AppHandle, install_dir: String, world_path: String) -> Result<String, String> {
+    require_login(&app)?;
     tokio::task::spawn_blocking(move || {
         worlds::backup_world(&PathBuf::from(install_dir), &PathBuf::from(world_path))
     })
@@ -681,7 +874,8 @@ async fn backup_world(install_dir: String, world_path: String) -> Result<String,
 
 /// Permanently delete a world (guarded in the UI by a confirm).
 #[tauri::command]
-fn delete_world(install_dir: String, world_path: String) -> Result<(), String> {
+fn delete_world(app: AppHandle, install_dir: String, world_path: String) -> Result<(), String> {
+    require_login(&app)?;
     worlds::delete_world(&PathBuf::from(install_dir), &PathBuf::from(world_path))
 }
 
@@ -705,6 +899,12 @@ pub fn run() {
             list_cached_versions,
             ensure_version,
             remove_version,
+            optimum_status,
+            optimum_eula,
+            accept_optimum_eula,
+            set_use_optimum,
+            provision_toolchain,
+            optimize_version,
             play,
             search_mods,
             install_mod,

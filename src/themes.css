@@ -123,6 +123,19 @@ textarea{resize:vertical;min-height:64px}
 .winbtn:hover{background:color-mix(in srgb,var(--fg) 12%,transparent);color:var(--fg)}
 .winbtn.close:hover{background:var(--bad);color:#fff}
 
+/* ---------- login wall ---------- */
+/* No stored account: the login form is the whole app. Same frameless chrome, so
+   the window still drags and closes, and the theme still applies. */
+.wall{height:100%;display:grid;place-items:center;padding:44px 20px 24px;background:var(--content-bg);overflow-y:auto}
+:root[data-theme="terminal"] .wall{background:var(--app-bg)}
+.wall-card{width:340px;max-width:100%}
+.wall-brand{display:flex;align-items:center;gap:12px;margin-bottom:22px}
+.wall-name{font-family:var(--title-font);font-size:22px;line-height:1.2;color:var(--fg)}
+.wall .cta{width:100%}
+.wall-themes{display:flex;gap:6px;margin-top:20px}
+.wall-themes .mini{flex:1}
+.wall-themes .mini.sel{border-color:var(--accent);color:var(--accent-ink)}
+
 /* ---------- layout ---------- */
 .layout{height:100%;min-height:0;display:grid;grid-template-columns:238px 1fr;overflow:hidden;background:var(--content-bg)}
 :root[data-theme="terminal"] .layout{gap:14px;padding:14px;background:var(--app-bg)}
