@@ -257,6 +257,63 @@ pub fn list_config_files(install_dir: &Path) -> Vec<String> {
     out
 }
 
+/// The subset of `list_config_files` that belongs to mods actually installed -
+/// the curator's "ship my settings as recommended defaults" bulk-select, and
+/// what keeps leftover configs from long-removed mods out of the pack.
+///
+/// Config filenames are mod-chosen and rarely equal the modid, so matching is
+/// heuristic, validated against the real Quire install (207 configs, 203 mods:
+/// 193 matched, 0 false inclusions, 5 abbreviation cases left for hand-ticking
+/// like Th3Config -> th3essentials). Rules: normalize each path segment under
+/// ModConfig/ to lowercase alphanumerics, also with generic tokens (config,
+/// settings, data, client, server) stripped; a config matches a modid on
+/// containment either way, or on a shared prefix of 8+ chars (catches
+/// DecoClockConfigData -> decoclockrevival). Stems under 4 chars are dropped -
+/// notably "ModConfig" itself strips to "mod", which would match half the
+/// registry.
+pub fn matching_config_files(install_dir: &Path) -> Vec<String> {
+    fn norm(s: &str) -> String {
+        s.chars().filter(|c| c.is_ascii_alphanumeric()).collect::<String>().to_lowercase()
+    }
+    fn common_prefix(a: &str, b: &str) -> usize {
+        a.bytes().zip(b.bytes()).take_while(|(x, y)| x == y).count()
+    }
+    const GENERIC: [&str; 5] = ["config", "settings", "data", "client", "server"];
+
+    let modids: Vec<String> = crate::deps::installed_mods(install_dir)
+        .into_iter()
+        .map(|(_, info)| info.modid)
+        .filter(|id| !id.is_empty())
+        .collect();
+
+    list_config_files(install_dir)
+        .into_iter()
+        .filter(|rel| {
+            let mut stems: Vec<String> = Vec::new();
+            // Skip the leading "ModConfig" folder segment itself.
+            for seg in rel.split('/').skip(1) {
+                let seg = seg.trim_end_matches(".json").trim_end_matches(".JSON");
+                let n = norm(seg);
+                let mut stripped = n.clone();
+                for t in GENERIC {
+                    stripped = stripped.replace(t, "");
+                }
+                if n.len() >= 4 {
+                    stems.push(n);
+                }
+                if stripped.len() >= 4 && !stems.contains(&stripped) {
+                    stems.push(stripped);
+                }
+            }
+            stems.iter().any(|st| {
+                modids.iter().any(|id| {
+                    id.contains(st.as_str()) || st.contains(id.as_str()) || common_prefix(id, st) >= 8
+                })
+            })
+        })
+        .collect()
+}
+
 fn collect_json(dir: &Path, root: &Path, out: &mut Vec<String>) {
     let Ok(rd) = std::fs::read_dir(dir) else { return };
     for e in rd.flatten() {

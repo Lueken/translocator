@@ -2791,7 +2791,20 @@ function App() {
 
                     {curConfigs.length > 0 && (
                       <div className="field">
-                        <span className="lab">Config overrides <span className="lab-hint">(shipped with the pack, applied on install)</span></span>
+                        <span className="lab">Config overrides <span className="lab-hint">(shipped as recommended defaults; players' own edits are never overwritten by updates)</span></span>
+                        <div style={{ display: "flex", gap: 8, margin: "2px 0 6px" }}>
+                          <button className="mini" disabled={!curInstall} title="Select every config file that belongs to a mod installed here, so your settings ship as the pack's starting point" onClick={async () => {
+                            try {
+                              const matched = await invoke<string[]>("match_config_files", { installDir: curInstall });
+                              setCurSelected(new Set(matched));
+                              const skipped = curConfigs.length - matched.length;
+                              toast(`Selected ${matched.length} config${matched.length === 1 ? "" : "s"} for this pack's mods${skipped > 0 ? ` (${skipped} left out: no matching installed mod)` : ""}`);
+                            } catch (e) {
+                              toast(`Config matching failed: ${e}`, undefined, false);
+                            }
+                          }}>Select all for this pack's mods</button>
+                          {curSelected.size > 0 && <button className="mini" onClick={() => setCurSelected(new Set())}>Clear</button>}
+                        </div>
                         <div className="cur-configs">
                           {curConfigs.map((c) => (
                             <label className="row-check" key={c}>

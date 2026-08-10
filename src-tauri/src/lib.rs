@@ -876,6 +876,15 @@ fn list_config_files(app: AppHandle, install_dir: String) -> Result<Vec<String>,
     Ok(curator::list_config_files(&PathBuf::from(install_dir)))
 }
 
+/// The config files that belong to the install's own mods (path matches an
+/// installed modid) - the curator's one-click "include my settings as
+/// recommended defaults" selection.
+#[tauri::command]
+fn match_config_files(app: AppHandle, install_dir: String) -> Result<Vec<String>, String> {
+    require_login(&app)?;
+    Ok(curator::matching_config_files(&PathBuf::from(install_dir)))
+}
+
 /// Browse published packs on the Hub (the Market list).
 #[tauri::command]
 async fn hub_list_packs(app: AppHandle, hub_url: String) -> Result<Vec<hub::PackSummary>, String> {
@@ -1060,6 +1069,7 @@ pub fn run() {
             curate_pack,
             publish_pack,
             list_config_files,
+            match_config_files,
             publisher_status,
             register_publisher,
             hub_list_packs,
