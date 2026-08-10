@@ -720,9 +720,18 @@ pub async fn optimize(app: &AppHandle, version: &str) -> Result<String, String> 
         if state.eula_accepted_release.is_none() {
             return Err("Optimum's end-user notice has not been accepted yet.".into());
         }
+        // Reaching here means the user opted in AND accepted Optimum's notice,
+        // so missing build tools are ours to fix, not an error to bounce to
+        // Settings: provision them user-locally now (first build only).
         let prereqs = detect_prereqs(app).await;
         if !prereqs.all_ok() {
-            return Err("The build toolchain is incomplete. Install it from Settings first.".into());
+            emit(app, version, "toolchain", "Setting up the build tools (first time only, ~250 MB)...");
+            let after = provision(app).await?;
+            if !after.all_ok() {
+                return Err(
+                    "The build tools could not be set up automatically. Open Settings > Optimized client to retry or see what is missing.".into(),
+                );
+            }
         }
         if !claim_build(version) {
             return Err(format!("An optimization for {version} is already running."));

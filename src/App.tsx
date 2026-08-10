@@ -3,6 +3,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
+import { check as checkAppUpdate, type Update } from "@tauri-apps/plugin-updater";
+import { relaunch } from "@tauri-apps/plugin-process";
 import gearIcon from "./assets/gear.png";
 import "./themes.css";
 
@@ -447,6 +449,10 @@ function App() {
   const [seedSettings, setSeedSettings] = useState(() => localStorage.getItem("tl-seed-settings") !== "0");
   // First-launch Optimum card: shown once per machine, after login.
   const [optimumOnboarded, setOptimumOnboarded] = useState(() => localStorage.getItem("tl-optimum-onboarded") === "1");
+  // Launcher self-update (tauri-plugin-updater against translocator.app).
+  const [appUpdate, setAppUpdate] = useState<Update | null>(null);
+  const [appUpdateDismissed, setAppUpdateDismissed] = useState(false);
+  const [appUpdating, setAppUpdating] = useState<number | null>(null); // pct, -1 = indeterminate
   const [backingUp, setBackingUp] = useState(false);
 
   const [view, setView] = useState<View>("installations");
@@ -562,6 +568,15 @@ function App() {
   useEffect(() => {
     if (!target && installs.length) setTarget(installs[0].path);
   }, [installs, target]);
+  // One launcher-update check per run, once signed in.
+  const updateChecked = useRef(false);
+  useEffect(() => {
+    if (account && !updateChecked.current) {
+      updateChecked.current = true;
+      checkLauncherUpdate();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [account]);
   // First visit to the Mods tab: load the most-downloaded listing so the page
   // never opens empty and ambiguous ("did it fetch? do I have to search?").
   useEffect(() => {
@@ -1070,6 +1085,39 @@ function App() {
     }
   }
 
+  // Check for a launcher update once per run, quietly: failures (offline,
+  // endpoint not live yet, unset pubkey in dev) log to the console feed and
+  // never toast, because most runs there is simply nothing to say.
+  async function checkLauncherUpdate() {
+    try {
+      const upd = await checkAppUpdate();
+      if (upd) {
+        setAppUpdate(upd);
+        say(`Translocator ${upd.version} is available (running ${upd.currentVersion}).`);
+      }
+    } catch (e) {
+      say(`Launcher update check skipped: ${e}`);
+    }
+  }
+  async function installLauncherUpdate() {
+    if (!appUpdate) return;
+    setAppUpdating(-1);
+    try {
+      let total = 0;
+      let got = 0;
+      await appUpdate.downloadAndInstall((ev) => {
+        if (ev.event === "Started") { total = ev.data.contentLength ?? 0; }
+        else if (ev.event === "Progress") { got += ev.data.chunkLength; setAppUpdating(total > 0 ? Math.min(100, (got / total) * 100) : -1); }
+        else if (ev.event === "Finished") { setAppUpdating(100); }
+      });
+      await relaunch();
+    } catch (e) {
+      setAppUpdating(null);
+      say(`Launcher update failed: ${e}`);
+      toast(`Update failed: ${e}`, undefined, false);
+    }
+  }
+
   // The one-time Optimum choice. Either way the answer is recorded and the
   // card never returns; Settings owns the toggle from here on.
   async function chooseOptimumDefault(useIt: boolean) {
@@ -1080,7 +1128,20 @@ function App() {
     }
     localStorage.setItem("tl-optimum-onboarded", "1");
     setOptimumOnboarded(true);
-    toast(useIt ? "Optimized client enabled. It builds in the background per game version." : "Using the standard client. Change anytime in Settings.");
+    if (useIt) {
+      toast("Optimized client enabled. It builds in the background per game version.");
+      // Complete the consent chain in one sitting: background builds stay
+      // (silently) skipped until Optimum's own notice is accepted, so a card
+      // opt-in that never visits Settings would otherwise do nothing.
+      try {
+        const st = await invoke<OptimumStatus>("optimum_status", { version: null });
+        if (!st.eula_accepted) await showEula();
+      } catch {
+        /* Settings can finish the consent later; the toggle is saved. */
+      }
+    } else {
+      toast("Using the standard client. Change anytime in Settings.");
+    }
   }
 
   // Open the install-pack modal with sensible defaults: the pack's name, the
@@ -1970,6 +2031,22 @@ function App() {
               );
             })}
           </nav>
+          {appUpdate && !appUpdateDismissed && (
+            <div className="upd-chip">
+              <div className="upd-t">Translocator {appUpdate.version} is ready</div>
+              {appUpdating === null ? (
+                <div className="upd-acts">
+                  <button className="cta" onClick={installLauncherUpdate}>Update and restart</button>
+                  <button className="mini" onClick={() => setAppUpdateDismissed(true)}>Later</button>
+                </div>
+              ) : (
+                <>
+                  <div className="prog"><i className={appUpdating < 0 ? "indet" : ""} style={appUpdating >= 0 ? { width: `${appUpdating}%` } : { width: "40%" }} /></div>
+                  <div className="upd-sub">Downloading update…</div>
+                </>
+              )}
+            </div>
+          )}
           {targetInfo && (
             <div className="dock">
               <div className="dock-name">{targetName}</div>
@@ -3114,8 +3191,9 @@ function App() {
             </p>
             <p className="muted">
               You'll review Optimum's own notice before its first build, and the build tools it needs are
-              set up privately inside Translocator's folder, no admin rights, nothing system-wide.
-              You can change this choice anytime in Settings.
+              set up automatically at that point, privately inside Translocator's folder (a one-time
+              download of roughly 250 MB), no admin rights, nothing system-wide. You can change this
+              choice anytime in Settings.
             </p>
             <div className="acts">
               <button className="btn" onClick={() => chooseOptimumDefault(false)}>Keep the standard client</button>

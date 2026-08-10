@@ -135,6 +135,16 @@ textarea{resize:vertical;min-height:64px}
 .wall-themes{display:flex;gap:6px;margin-top:20px}
 .wall-themes .mini{flex:1}
 .wall-themes .mini.sel{border-color:var(--accent);color:var(--accent-ink)}
+.upd-chip{margin:10px 12px 0;padding:10px 12px;border:1px solid var(--side-line);border-radius:var(--radius);
+  background:var(--side-bg2);color:var(--side-fg)}
+.upd-t{font-family:var(--nm-font);font-size:13px;margin-bottom:8px}
+.upd-acts{display:flex;gap:6px}
+.upd-acts .cta{flex:1;padding:6px 10px;font-size:12px}
+/* .mini is styled for the parchment content area; in the dark sidebar its
+   text would be dark-on-dark, so recolor it for the side palette. */
+.upd-chip .mini{color:var(--side-muted);border-color:var(--side-line);background:transparent}
+.upd-chip .mini:hover{color:var(--side-fg);border-color:var(--accent)}
+.upd-sub{font-size:11px;color:var(--side-muted);margin-top:5px}
 .eula-card{width:560px}
 .eula-card .acts{display:flex;gap:10px;justify-content:flex-end;margin-top:16px}
 .eula-card .acts .cta{width:auto}
