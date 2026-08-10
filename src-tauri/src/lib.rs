@@ -770,6 +770,18 @@ async fn curate_pack(
     if pack.min_launcher_version.trim().is_empty() {
         pack.min_launcher_version = env!("CARGO_PKG_VERSION").to_string();
     }
+    // Image URLs must be https (the Hub enforces the same; the webview CSP
+    // additionally only renders images from the Cloudinary CDN).
+    if pack.gallery.len() > 8 {
+        return Err("a pack gallery holds at most 8 screenshots".into());
+    }
+    for u in pack.gallery.iter().chain(
+        (!pack.icon.is_empty() && pack.icon.contains("://")).then_some(&pack.icon),
+    ) {
+        if !u.starts_with("https://") {
+            return Err(format!("image URLs must be https ({u})"));
+        }
+    }
     curator::build_manifest(&PathBuf::from(install_dir), pack, links, server, override_paths).await
 }
 
@@ -818,7 +830,7 @@ async fn register_publisher(app: AppHandle, hub_url: String) -> Result<serde_jso
     let account = require_account(&app)?;
     let key = signing::load_or_create_key(&app)?;
     let base = hub_url.trim_end_matches('/').to_string();
-    let client = reqwest::Client::new();
+    let client = hub::client();
 
     let challenge: serde_json::Value = client
         .post(format!("{base}/api/publishers/challenge"))
@@ -874,6 +886,15 @@ async fn publish_pack(app: AppHandle, hub_url: String, manifest: manifest::Manif
 fn list_config_files(app: AppHandle, install_dir: String) -> Result<Vec<String>, String> {
     require_login(&app)?;
     Ok(curator::list_config_files(&PathBuf::from(install_dir)))
+}
+
+/// Upload a pack image (logo/screenshot) to the project's Cloudinary cloud
+/// and return its delivery URL. Publisher-side only; the webview CSP renders
+/// images exclusively from res.cloudinary.com.
+#[tauri::command]
+async fn upload_pack_image(app: AppHandle, cloud: String, preset: String, path: String) -> Result<String, String> {
+    require_login(&app)?;
+    curator::upload_image(&cloud, &preset, &PathBuf::from(path)).await
 }
 
 /// The config files that belong to the install's own mods (path matches an
@@ -1070,6 +1091,7 @@ pub fn run() {
             publish_pack,
             list_config_files,
             match_config_files,
+            upload_pack_image,
             publisher_status,
             register_publisher,
             hub_list_packs,

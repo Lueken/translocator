@@ -35,6 +35,11 @@ pub struct ManifestPack {
     pub strict: bool,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub icon: String,
+    /// Screenshot URLs for the pack page carousel (https-only, max 8).
+    /// Signed like everything else in the manifest; changing the gallery is a
+    /// pack-version bump by design.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub gallery: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub moddb: Option<ModDbRef>,
 }

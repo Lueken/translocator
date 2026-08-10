@@ -35,10 +35,24 @@ fn base(hub_url: &str) -> String {
     hub_url.trim_end_matches('/').to_string()
 }
 
+/// Shared client for every Hub call: stamps the launcher version so the Hub's
+/// logs can tell clients (and versions) apart. Identification, not
+/// authentication - the header is trivially forgeable and is treated as such.
+pub(crate) fn client() -> reqwest::Client {
+    let mut headers = reqwest::header::HeaderMap::new();
+    if let Ok(v) = reqwest::header::HeaderValue::from_str(env!("CARGO_PKG_VERSION")) {
+        headers.insert("x-translocator-version", v);
+    }
+    reqwest::Client::builder()
+        .default_headers(headers)
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new())
+}
+
 /// Browse every published pack with its latest version.
 pub async fn list_packs(hub_url: &str) -> Result<Vec<PackSummary>, String> {
     let url = format!("{}/api/packs", base(hub_url));
-    let resp = reqwest::Client::new()
+    let resp = client()
         .get(&url)
         .send()
         .await
@@ -57,7 +71,7 @@ pub async fn list_packs(hub_url: &str) -> Result<Vec<PackSummary>, String> {
 /// through as raw JSON rather than a strict struct.
 pub async fn pack_detail(hub_url: &str, id: &str) -> Result<serde_json::Value, String> {
     let url = format!("{}/api/packs/{}", base(hub_url), id);
-    let resp = reqwest::Client::new()
+    let resp = client()
         .get(&url)
         .send()
         .await
@@ -84,7 +98,7 @@ pub async fn pack_manifest(
     if let Some(v) = version.filter(|v| !v.is_empty()) {
         url.push_str(&format!("?version={v}"));
     }
-    let resp = reqwest::Client::new()
+    let resp = client()
         .get(&url)
         .send()
         .await

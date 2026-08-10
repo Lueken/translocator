@@ -213,6 +213,57 @@ pub async fn build_manifest(
     })
 }
 
+/// Upload a publisher's image (pack logo / screenshot) to the Cloudinary
+/// cloud via an UNSIGNED upload preset: cloud name and preset are public-safe
+/// constants, no API secret ever touches the launcher. Returns the delivery
+/// URL; display always rides Cloudinary's f_auto/q_auto transforms, so
+/// originals are uploaded as-is.
+pub async fn upload_image(cloud: &str, preset: &str, path: &Path) -> Result<String, String> {
+    const MAX_BYTES: u64 = 10 * 1024 * 1024;
+    let meta = std::fs::metadata(path).map_err(|e| format!("could not read the image: {e}"))?;
+    if meta.len() > MAX_BYTES {
+        return Err("images over 10 MB are refused; Cloudinary free tier and pack pages both prefer smaller".into());
+    }
+    let bytes = std::fs::read(path).map_err(|e| format!("could not read the image: {e}"))?;
+    // PNG / JPEG / GIF / WebP magic; anything else is refused before upload.
+    let ok = bytes.starts_with(&[0x89, 0x50, 0x4E, 0x47])
+        || bytes.starts_with(&[0xFF, 0xD8, 0xFF])
+        || bytes.starts_with(b"GIF8")
+        || (bytes.len() > 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WEBP");
+    if !ok {
+        return Err("that file is not a PNG, JPEG, GIF, or WebP image".into());
+    }
+    let filename = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "image".into());
+    let form = reqwest::multipart::Form::new()
+        .text("upload_preset", preset.to_string())
+        .part(
+            "file",
+            reqwest::multipart::Part::bytes(bytes).file_name(filename),
+        );
+    let resp = reqwest::Client::new()
+        .post(format!("https://api.cloudinary.com/v1_1/{cloud}/image/upload"))
+        .multipart(form)
+        .send()
+        .await
+        .map_err(|e| format!("upload failed: {e}"))?;
+    let status = resp.status();
+    let body: serde_json::Value = resp.json().await.unwrap_or_else(|_| serde_json::json!({}));
+    if !status.is_success() {
+        let msg = body
+            .pointer("/error/message")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown error");
+        return Err(format!("Cloudinary rejected the upload ({status}): {msg}"));
+    }
+    body.get("secure_url")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .ok_or_else(|| "Cloudinary returned no URL".into())
+}
+
 /// Publish a signed manifest to the Hub. The envelope is
 /// `{ manifest, signature, uid }`: the Hub rebuilds the canonical payload
 /// (which binds the uid) and verifies the signature against one of that VS
@@ -228,7 +279,7 @@ pub async fn publish(
 ) -> Result<String, String> {
     let base = hub_url.trim_end_matches('/');
     let url = format!("{base}/api/packs/{pack_id}/versions");
-    let resp = reqwest::Client::new()
+    let resp = crate::hub::client()
         .post(&url)
         .json(&serde_json::json!({
             "manifest": manifest_value,

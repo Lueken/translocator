@@ -76,7 +76,9 @@ stored session. Devtools (F12) are enabled in release builds during beta.
 
 ## License
 
-Proprietary software of Lueken Good Design LLC, free of charge for personal
-use. See the in-app end-user notice. Optimum is an independent project under
-its own license (GPL-3.0 with Commons Clause) and is never bundled or
-redistributed here.
+GNU GPL v3.0 with the Commons Clause (see LICENSE): read it, build it,
+modify it, redistribute it under the same terms, but nobody sells it.
+Official builds are produced and signed only by Lueken Good Design LLC.
+Contributions are accepted under the grant in CONTRIBUTING.md. Optimum is an
+independent project under its own license (also GPL-3.0 with Commons Clause)
+and is never bundled or redistributed here.

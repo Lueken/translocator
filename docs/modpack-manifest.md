@@ -53,7 +53,8 @@ fields are snake_case.
     "game_version": "1.22.3",            // the VS version this pack targets
     "min_launcher_version": "0.2.0",     // oldest Translocator that can install this pack
     "strict": true,                      // true = self-contained: manifest is the whole Mods folder
-    "icon": "icon.png",                  // optional, relative asset name
+    "icon": "https://res.cloudinary.com/…/logo.png",  // optional; https image URL (or a legacy glyph string)
+    "gallery": ["https://res.cloudinary.com/…/1.jpg"], // optional; https-only, max 8; the pack page carousel
     "created": "2026-07-22T00:00:00Z",
     "updated": "2026-07-22T18:00:00Z",
     "moddb": { "modid": null, "assetid": null }  // set once the pack itself is a ModDB entry (#54)
@@ -111,7 +112,8 @@ fields are snake_case.
 | `game_version` | string | VS version the pack targets. |
 | `min_launcher_version` | string | Oldest Translocator that can install this pack. An older launcher refuses and prompts to update, so a pack using newer schema features never half-installs on a client that can't understand it. |
 | `strict` | bool? | Default `false`. `true` = the pack is self-contained (locked 2026-07-24): the manifest defines the ENTIRE `Mods/` folder. The launcher refuses to install extra mods into the managed install, and each pack update sweeps foreign zips out (after a mods backup, listing what is removed). `false` = user-added mods are allowed; updates manage only pack-owned files (tracked per install) and leave the rest alone. Server packs like The Quire want `true`; content-collection packs want `false`. |
-| `icon` | string? | Optional asset name for the pack logo. |
+| `icon` | string? | Pack logo: an https image URL (uploaded to the project's Cloudinary via the curator; the launcher renders images only from `res.cloudinary.com` per its CSP and requests `f_auto,q_auto` width-capped variants). A non-URL value renders as a letter glyph. |
+| `gallery` | string[]? | Screenshot URLs for the pack page carousel. https-only, max 8. Signed with the rest of the manifest: changing screenshots is a pack-version bump by design. |
 | `created` / `updated` | ISO 8601 | Timestamps. |
 | `moddb` | object? | `{modid, assetid}` once the pack is a ModDB entry; both `null` until then. |
 
@@ -295,3 +297,5 @@ A manifest is rejected if any of the following fail:
 - Every `overrides[]` entry has `encoding` of `utf8` or `base64` (or omitted =
   `utf8`), and a `path` that is relative, contains no `..`, and does not resolve
   outside the install dataPath.
+- `pack.gallery`, when present, is an array of at most 8 `https://` URLs, and
+  `pack.icon`, when it is a URL, is `https://`.

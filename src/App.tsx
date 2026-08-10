@@ -90,7 +90,7 @@ type PackSummary = {
 type PackManifestMod = { modid: number; modidstr: string; name: string; modversion: string; side: string; required: boolean; fileid?: number; sha256?: string };
 type PackManifest = {
   manifest_version: number;
-  pack: { id: string; name: string; version: string; author: string; summary?: string; description?: string; tags?: string[]; game_version: string; icon?: string; strict?: boolean; min_launcher_version?: string };
+  pack: { id: string; name: string; version: string; author: string; summary?: string; description?: string; tags?: string[]; game_version: string; icon?: string; gallery?: string[]; strict?: boolean; min_launcher_version?: string };
   links?: { website?: string; discord?: string; source?: string; donate?: string } | null;
   server?: { address: string; auto_add: boolean } | null;
   mods: PackManifestMod[];
@@ -133,6 +133,7 @@ type CuratorMeta = {
   tags: string;
   game_version: string;
   icon: string;
+  gallery: string;
   strict: boolean;
 };
 type PublisherStatus = { signed_in: boolean; playername: string | null; has_key: boolean; fingerprint: string | null };
@@ -140,7 +141,7 @@ type Theme = "almanac" | "workshop" | "terminal";
 
 // ---- App EULA (shown before the login wall; acceptance version-stamped) ----
 // Bump the version only on MATERIAL changes: it re-prompts every user.
-const APP_EULA_VERSION = "1.1";
+const APP_EULA_VERSION = "1.2";
 const APP_EULA: { h: string; p: string }[] = [
   {
     h: "1. Independent project",
@@ -159,8 +160,8 @@ const APP_EULA: { h: string; p: string }[] = [
     p: "Your credentials are sent only to Vintage Story's official authentication servers, never to Translocator's operator or any third party. Your session is stored encrypted on this machine, tied to your Windows user account. Translocator collects no telemetry.",
   },
   {
-    h: "5. License",
-    p: "Translocator is proprietary software of Lueken Good Design LLC, provided free of charge for personal use. This notice is a plain-language summary; the complete and controlling terms are in the Translocator LICENSE file, which is installed alongside the application and included in the source repository. You may not sell, redistribute, or misrepresent the origin of Translocator. Publishing modpacks through Translocator does not transfer any rights in the referenced mods, which remain subject to their authors' licenses.",
+    h: "5. License and source code",
+    p: "Translocator is copyright Lueken Good Design LLC and is released under the GNU General Public License v3.0 with the Commons Clause: the source code is public, and you may read, modify, and redistribute it under those terms, but not sell it. The full license accompanies the application and the source repository, and this notice is a plain-language summary of it; where they differ, the license controls. The public source also means anyone can verify the claims made above, including how your credentials are handled. Official builds are produced and signed only by Lueken Good Design LLC. Publishing modpacks through Translocator does not transfer any rights in the referenced mods, which remain subject to their authors' licenses.",
   },
   {
     h: "6. Disclaimer of warranty",
@@ -177,6 +178,11 @@ type Toast = { id: number; msg: string; undo?: () => void; ok?: boolean };
 // The Hub base URL. Read-only Market/pack calls route through Rust (the webview
 // CSP forbids direct network access).
 const HUB_URL = "https://api.translocator.app";
+// Cloudinary, for publisher image uploads (pack logos/screenshots). Both
+// values are public-safe: the cloud name appears in every delivery URL and
+// the preset is UNSIGNED by design - no API secret exists anywhere in the app.
+const CLOUDINARY_CLOUD = "translocator-images";
+const CLOUDINARY_PRESET = "alq7otnc";
 
 // Paths start from localStorage; on first run they're filled from
 // `suggested_paths` (resolved to this machine's %APPDATA%), never hardcoded.
@@ -267,8 +273,18 @@ async function copyText(text: string): Promise<boolean> {
 const slugify = (s: string) =>
   s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
 const EMPTY_CUR_META: CuratorMeta = {
-  id: "", name: "", version: "1.0.0", author: "", summary: "", description: "", tags: "", game_version: "", icon: "", strict: false,
+  id: "", name: "", version: "1.0.0", author: "", summary: "", description: "", tags: "", game_version: "", icon: "", gallery: "", strict: false,
 };
+
+// True when a pack icon/gallery entry is a web image rather than a glyph.
+const isImgUrl = (s?: string | null): s is string => !!s && s.startsWith("https://");
+// Serve Cloudinary images through its transform pipeline (auto format/quality,
+// capped width) so cards and carousels never pull full-size originals. Other
+// hosts pass through untouched; the CSP only renders res.cloudinary.com anyway.
+function cdnImg(url: string, w: number): string {
+  const m = url.match(/^(https:\/\/res\.cloudinary\.com\/[^/]+\/image\/upload\/)(.+)$/);
+  return m ? `${m[1]}f_auto,q_auto,w_${w}/${m[2]}` : url;
+}
 
 // localStorage helpers for per-install ignore/pin lists
 const igKey = (p: string) => `tl-ignores:${p}`;
@@ -396,6 +412,7 @@ function App() {
   const [packSeed, setPackSeed] = useState<string>("");
   const [packOptionals, setPackOptionals] = useState<Record<string, boolean>>({});
   const [packInstalling, setPackInstalling] = useState(false);
+  const [galIdx, setGalIdx] = useState(0);
   const [packProgress, setPackProgress] = useState<{ phase: string; detail: string; done: number; total: number; received: number; bytesTotal: number } | null>(null);
 
   // ---- Servers ----
@@ -957,6 +974,7 @@ function App() {
       tags: (p.tags || []).join(", "),
       game_version: p.game_version,
       icon: p.icon || "",
+      gallery: (p.gallery || []).join("\n"),
       strict: !!p.strict,
     });
     setCurIdEdited(true); // the id is published identity; never re-derive it from the name
@@ -1013,6 +1031,7 @@ function App() {
           min_launcher_version: "",
           strict: curMeta.strict,
           icon: curMeta.icon.trim(),
+          gallery: curMeta.gallery.split("\n").map((u) => u.trim()).filter(Boolean),
         },
         server: curServer.address.trim() ? { address: curServer.address.trim(), auto_add: curServer.auto_add } : null,
         links: hasLinks ? links : null,
@@ -1074,6 +1093,7 @@ function App() {
     setPackError(null);
     setPackDetail(null);
     setPackManifest(null);
+    setGalIdx(0);
     try {
       const [detail, manifest] = await Promise.all([
         invoke<PackDetail>("hub_pack", { hubUrl: HUB_URL, id }),
@@ -1144,6 +1164,34 @@ function App() {
       }
     } else {
       toast("Using the standard client. Change anytime in Settings.");
+    }
+  }
+
+  // Publisher image uploads: pick local files, push them to Cloudinary, and
+  // drop the delivery URLs into the curator fields.
+  const [uploadingImg, setUploadingImg] = useState(false);
+  async function uploadPackImages(kind: "logo" | "shots") {
+    try {
+      const picked = await openDialog({
+        multiple: kind === "shots",
+        title: kind === "logo" ? "Choose a pack logo" : "Choose screenshots",
+        filters: [{ name: "Images", extensions: ["png", "jpg", "jpeg", "gif", "webp"] }],
+      });
+      const files = Array.isArray(picked) ? picked : picked ? [picked] : [];
+      if (!files.length) return;
+      setUploadingImg(true);
+      for (const f of files) {
+        say(`Uploading ${f} to Cloudinary ...`);
+        const url = await invoke<string>("upload_pack_image", { cloud: CLOUDINARY_CLOUD, preset: CLOUDINARY_PRESET, path: f });
+        if (kind === "logo") setCurMeta((m) => ({ ...m, icon: url }));
+        else setCurMeta((m) => ({ ...m, gallery: (m.gallery.trim() ? m.gallery.trimEnd() + "\n" : "") + url }));
+      }
+      toast(kind === "logo" ? "Logo uploaded" : `${files.length} screenshot${files.length === 1 ? "" : "s"} uploaded`);
+    } catch (e) {
+      say(`Image upload error: ${e}`);
+      toast(`Upload failed: ${e}`, undefined, false);
+    } finally {
+      setUploadingImg(false);
     }
   }
 
@@ -2592,7 +2640,7 @@ function App() {
                   <div className="pack-grid">
                     {packs.map((p) => (
                       <button className="pack-card" key={p.id} onClick={() => openPack(p.id)}>
-                        <div className="pack-ico">{p.icon || p.name[0]?.toUpperCase() || "?"}</div>
+                        <div className="pack-ico">{isImgUrl(p.icon) ? <img className="pack-ico-img" src={cdnImg(p.icon, 128)} alt="" /> : (p.icon || p.name[0]?.toUpperCase() || "?")}</div>
                         <div className="pack-body">
                           <div className="pack-name">{p.name}</div>
                           {p.summary && <div className="pack-sum">{p.summary}</div>}
@@ -2642,7 +2690,7 @@ function App() {
                 {!packError && packManifest && (
                   <>
                     <div className="pack-head">
-                      <div className="pack-head-ico">{packManifest.pack.icon || packManifest.pack.name[0]?.toUpperCase() || "?"}</div>
+                      <div className="pack-head-ico">{isImgUrl(packManifest.pack.icon) ? <img className="pack-ico-img" src={cdnImg(packManifest.pack.icon, 256)} alt="" /> : (packManifest.pack.icon || packManifest.pack.name[0]?.toUpperCase() || "?")}</div>
                       <div>
                         <div className="pack-head-meta tab">
                           v{packManifest.pack.version} · VS {packManifest.pack.game_version} · by {packManifest.pack.author}
@@ -2675,6 +2723,28 @@ function App() {
                     </div>
 
                     {packManifest.pack.description && <p className="pack-desc">{packManifest.pack.description}</p>}
+
+                    {(() => {
+                      const gal = (packManifest.pack.gallery || []).filter(isImgUrl);
+                      if (!gal.length) return null;
+                      const i = Math.min(galIdx, gal.length - 1);
+                      return (
+                        <div className="gal">
+                          <img className="gal-img" src={cdnImg(gal[i], 1280)} alt={`Screenshot ${i + 1} of ${gal.length}`} loading="lazy" />
+                          {gal.length > 1 && (
+                            <>
+                              <button className="gal-nav prev" aria-label="Previous screenshot" onClick={() => setGalIdx((i + gal.length - 1) % gal.length)}>‹</button>
+                              <button className="gal-nav next" aria-label="Next screenshot" onClick={() => setGalIdx((i + 1) % gal.length)}>›</button>
+                              <div className="gal-dots">
+                                {gal.map((_, d) => (
+                                  <button key={d} className={"gal-dot" + (d === i ? " on" : "")} aria-label={`Screenshot ${d + 1}`} onClick={() => setGalIdx(d)} />
+                                ))}
+                              </div>
+                            </>
+                          )}
+                        </div>
+                      );
+                    })()}
 
                     {packManifest.server && (
                       <div className="pack-server">
@@ -2767,6 +2837,16 @@ function App() {
                       <input value={curMeta.summary} onChange={(e) => setCurMeta({ ...curMeta, summary: e.target.value })} /></label>
                     <label className="field"><span className="lab">Description</span>
                       <textarea rows={4} value={curMeta.description} onChange={(e) => setCurMeta({ ...curMeta, description: e.target.value })} /></label>
+                    <label className="field"><span className="lab">Pack logo <span className="lab-hint">(uploaded to Cloudinary; compression applied automatically on display)</span></span>
+                      <div style={{ display: "flex", gap: 8 }}>
+                        <input style={{ flex: 1 }} value={curMeta.icon} placeholder="Upload, or paste an https image URL" onChange={(e) => setCurMeta({ ...curMeta, icon: e.target.value })} />
+                        <button className="btn" type="button" disabled={uploadingImg} onClick={() => uploadPackImages("logo")}>{uploadingImg ? "Uploading…" : "Upload…"}</button>
+                      </div>
+                    </label>
+                    <label className="field"><span className="lab">Screenshots <span className="lab-hint">(up to 8, shown as a carousel on the pack page; one URL per line)</span></span>
+                      <textarea rows={3} value={curMeta.gallery} placeholder="Upload, or paste https image URLs" onChange={(e) => setCurMeta({ ...curMeta, gallery: e.target.value })} />
+                      <button className="btn" type="button" style={{ alignSelf: "flex-start", marginTop: 6 }} disabled={uploadingImg} onClick={() => uploadPackImages("shots")}>{uploadingImg ? "Uploading…" : "Upload screenshots…"}</button>
+                    </label>
 
                     <div className="cur-grid">
                       <label className="field"><span className="lab">Server address <span className="lab-hint">(optional)</span></span>
