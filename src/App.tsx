@@ -42,6 +42,7 @@ type InstallationMeta = {
 type InstallationCard = { path: string; meta: InstallationMeta; mod_count: number; has_session: boolean };
 type PlayResult =
   | { status: "needsRelogin"; reason: string }
+  | { status: "needsVersion"; version: string }
   | { status: "played"; exit_code: number; rotated: boolean; account: Account };
 type ModSummary = { modid: number; modidstr: string; name: string; summary: string; author: string; downloads: number };
 type ReleaseView = { modversion: string; tags: string[]; changelog: string; created: string };
@@ -844,7 +845,9 @@ function App() {
     try {
       say(`▶ Connecting to ${name || address} via ${inst?.meta.name ?? installDir} ...`);
       const res = await invoke<PlayResult>("connect_server", { gameExe, installDir, address, password: password || null });
-      if (res.status === "needsRelogin") {
+      if (res.status === "needsVersion") {
+        toast(`Vintage Story ${res.version} isn't downloaded yet. Press Play on the installation once to fetch it, then join.`, undefined, false);
+      } else if (res.status === "needsRelogin") {
         say(`✗ Session rejected by server (${res.reason}). Re-login needed.`);
         toast("Session expired. Sign in again to continue.", undefined, false);
         setAccount(null);
@@ -1498,8 +1501,42 @@ function App() {
     setBusy(true);
     try {
       say(`▶ ${inst.meta.name}: validate → stamp → launch ...`);
-      const res = await invoke<PlayResult>("play", { gameExe, installDir: inst.path });
-      if (res.status === "needsRelogin") {
+      let res = await invoke<PlayResult>("play", { gameExe, installDir: inst.path });
+      if (res.status === "needsVersion") {
+        // Pinned version exists nowhere on this machine (not our cache, not an
+        // adopted launcher's binaries): download it once, then retry the launch.
+        say(`VS ${res.version} isn't on this machine yet; downloading it first.`);
+        let list = availableVersions;
+        if (!list.length) {
+          try {
+            list = await invoke<AvailableVersion[]>("list_available_versions");
+            setAvailableVersions(list);
+          } catch {
+            list = [];
+          }
+        }
+        const needed = res.version;
+        const av = list.find((v) => v.version === needed);
+        if (!av) {
+          toast(`Vintage Story ${needed} isn't offered by the official version manifest`, undefined, false);
+          return;
+        }
+        setVersionProgress({ version: av.version, phase: "download", pct: -1 });
+        try {
+          await invoke("ensure_version", { version: av.version, url: av.url, md5: av.md5 });
+          say(`✓ Game ${av.version} is ready in the cache; launching.`);
+        } catch (e) {
+          say(`Version install error: ${e}`);
+          toast(`Failed to install ${av.version}: ${e}`, undefined, false);
+          return;
+        } finally {
+          setVersionProgress(null);
+        }
+        res = await invoke<PlayResult>("play", { gameExe, installDir: inst.path });
+      }
+      if (res.status === "needsVersion") {
+        toast(`Could not launch: Vintage Story ${res.version} is still unavailable`, undefined, false);
+      } else if (res.status === "needsRelogin") {
         say(`✗ Session rejected by server (${res.reason}). Re-login needed.`);
         toast("Session expired. Sign in again to continue.", undefined, false);
         setAccount(null);

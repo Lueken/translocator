@@ -44,10 +44,22 @@ struct VslInstall {
     total_time_played: u64,
 }
 
+/// VSL's downloaded-game-version record: `{version, path}` pointing at a
+/// `VSLGameVersions\<ver>` folder holding real game binaries.
+#[derive(Deserialize)]
+struct VslGameVersion {
+    #[serde(default)]
+    version: String,
+    #[serde(default)]
+    path: String,
+}
+
 #[derive(Deserialize)]
 struct VslConfig {
     #[serde(default)]
     installations: Vec<VslInstall>,
+    #[serde(rename = "gameVersions", default)]
+    game_versions: Vec<VslGameVersion>,
 }
 
 /// A launcher we found on disk with installations Translocator can adopt.
@@ -156,6 +168,21 @@ fn read_vsl_config(root: &Path) -> Option<VslConfig> {
     let path = root.join("VSLauncher").join("config.json");
     let text = std::fs::read_to_string(path).ok()?;
     serde_json::from_str(&text).ok()
+}
+
+/// VS Launcher's own downloaded binary for a game version, if VSL has it.
+/// The adoption promise is "pick up your old installs and just run": VSL users
+/// already hold the right binaries in VSLGameVersions, so launching resolves
+/// through them before ever asking anyone to download a version they own.
+pub fn vsl_version_exe(app: &AppHandle, version: &str) -> Option<PathBuf> {
+    let root = appdata_root(app)?;
+    let cfg = read_vsl_config(&root)?;
+    let v = cfg
+        .game_versions
+        .iter()
+        .find(|g| g.version.eq_ignore_ascii_case(version) && !g.path.trim().is_empty())?;
+    let exe = PathBuf::from(&v.path).join("Vintagestory.exe");
+    exe.is_file().then_some(exe)
 }
 
 /// Seed `translocator.json` for every folder in `installations_dir` that a known

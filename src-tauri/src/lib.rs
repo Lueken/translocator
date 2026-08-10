@@ -354,6 +354,11 @@ async fn optimize_version(app: AppHandle, version: String) -> Result<String, Str
 enum PlayResult {
     /// The stored session is dead server-side; the UI must re-login.
     NeedsRelogin { reason: String },
+    /// The install is pinned to a version no local source provides (not our
+    /// cache, not an adopted launcher's binaries). The UI offers the download
+    /// and retries; the old behavior of silently launching the fallback exe
+    /// produced wrong-version launches for adopted installs.
+    NeedsVersion { version: String },
     /// The game ran. If `rotated`, the game issued a new session on exit; the
     /// refreshed session was persisted server-side and `account` is its view.
     Played {
@@ -407,13 +412,24 @@ async fn play_inner(
     let dir = PathBuf::from(&install_dir);
     let meta = installations::read_meta(&dir).unwrap_or_default();
 
-    // Resolve the game binary: prefer our cached copy for the install's pinned
-    // version; fall back to the caller-provided exe (e.g. an existing VS
-    // Launcher binary) so already-set-up installs keep working.
+    // Resolve the game binary for the install's pinned version: our shared
+    // cache first, then an adopted launcher's own downloaded binary (VSL users
+    // already hold the right versions; adoption means running with them, not
+    // re-downloading them). A pinned version found NOWHERE stops with
+    // NeedsVersion so the UI can offer the download: the old silent fallback
+    // to the base-game exe launched whatever version that happened to be.
+    // Only an UNPINNED install uses the fallback exe.
     let vanilla_exe = if !meta.version.is_empty() {
-        versions::exe_path(&app, &meta.version)
-            .map(|p| p.to_string_lossy().into_owned())
-            .unwrap_or(game_exe)
+        match versions::exe_path(&app, &meta.version)
+            .or_else(|| migrate::vsl_version_exe(&app, &meta.version))
+        {
+            Some(p) => p.to_string_lossy().into_owned(),
+            None => {
+                return Ok(PlayResult::NeedsVersion {
+                    version: meta.version.clone(),
+                })
+            }
+        }
     } else {
         game_exe
     };
