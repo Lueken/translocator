@@ -17,10 +17,21 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
+[features]
+# The webview inspector in RELEASE builds. Off by default, and it must stay
+# that way in anything handed to another person: the login form holds the
+# account password in component state while it is being typed, and a shipped
+# launcher that opens an inspector on F12 puts that one keypress away from
+# anyone at the machine - screen sharing included, which for a game launcher is
+# close to the normal case.
+#
+# Debug builds (`npm run tauri dev`) get devtools from Tauri regardless of this
+# feature, so day-to-day development is unaffected. For a field-debug release:
+#   cargo build --release --features devtools
+devtools = ["tauri/devtools"]
+
 [dependencies]
-# devtools: F12/Ctrl+Shift+I in RELEASE builds too - deliberate while beta
-# dogfooding (field debugging); drop the feature before wide public release.
-tauri = { version = "2", features = ["devtools"] }
+tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
 tauri-plugin-window-state = "2"
 tauri-plugin-dialog = "2"

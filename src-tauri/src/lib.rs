@@ -79,6 +79,18 @@ fn eula_status(app: AppHandle) -> Result<Option<String>, String> {
         .filter(|v| !v.is_empty()))
 }
 
+/// Whether secrets at rest are actually encrypted by the OS on this build.
+///
+/// True on Windows, where `store::seal` wraps everything in DPAPI. False
+/// anywhere else, where `seal` is an identity function and the session key,
+/// saved server passwords and the signing seed sit on disk as cleartext. The
+/// notice tells the user which of those two they are running, because claiming
+/// encryption we are not performing is worse than not having it.
+#[tauri::command]
+fn at_rest_sealed() -> bool {
+    cfg!(windows)
+}
+
 /// Record acceptance of the notice version the frontend displayed.
 #[tauri::command]
 fn accept_app_eula(app: AppHandle, version: String) -> Result<(), String> {
@@ -154,11 +166,22 @@ fn open_url(app: AppHandle, url: String) -> Result<(), String> {
     app.opener().open_url(url, None::<&str>).map_err(|e| e.to_string())
 }
 
-/// Forget the persisted account.
+/// Forget the persisted account, and scrub the session the game leaves behind.
+///
+/// Deleting `account.dat` only forgets OUR copy. The game writes the same
+/// session key into every install's `clientsettings.json` at launch and never
+/// removes it, so signing out without this leaves a working credential on disk
+/// under each installation - which is not what "log out" means to anyone,
+/// least of all on a shared machine. `installations_dir` may be empty (the
+/// workspace is not set up yet), in which case there is nothing to scrub.
 #[tauri::command]
-fn logout(app: AppHandle) -> Result<(), String> {
+fn logout(app: AppHandle, installations_dir: String) -> Result<(), String> {
     require_login(&app)?;
-    store::clear_account(&app)
+    store::clear_account(&app)?;
+    if !installations_dir.is_empty() {
+        installations::scrub_all_sessions(&PathBuf::from(installations_dir));
+    }
+    Ok(())
 }
 
 /// Every installation under `installations_dir`, with its metadata (adopting any
@@ -540,14 +563,23 @@ async fn play(app: AppHandle, game_exe: String, install_dir: String) -> Result<P
 /// Launch an installation and connect straight to a server (the server browser's
 /// Join). Same validate/stamp/read-back path as `play`, plus `--connect`.
 #[tauri::command]
+/// `saved_server_id` names a server in the sealed private-server store, whose
+/// password is looked up here rather than being passed in: that is what keeps
+/// it out of the webview. `password` remains for the public browser, where the
+/// user types one for a server they have not saved.
 async fn connect_server(
     app: AppHandle,
     game_exe: String,
     install_dir: String,
     address: String,
     password: Option<String>,
+    saved_server_id: Option<String>,
 ) -> Result<PlayResult, String> {
     require_login(&app)?;
+    let password = match saved_server_id.as_deref() {
+        Some(id) => servers::password_for(&app, id),
+        None => password,
+    };
     play_inner(app, game_exe, install_dir, Some((address, password))).await
 }
 
@@ -966,23 +998,24 @@ async fn list_public_servers(app: AppHandle) -> Result<Vec<servers::PublicServer
     servers::list_public_servers().await
 }
 
-/// The user's saved private servers (the Servers > Private tab).
+/// The user's saved private servers (the Servers > Private tab), redacted: the
+/// saved passwords stay on this side of the boundary.
 #[tauri::command]
-fn list_private_servers(app: AppHandle) -> Result<Vec<servers::PrivateServer>, String> {
+fn list_private_servers(app: AppHandle) -> Result<Vec<servers::PrivateServerView>, String> {
     require_login(&app)?;
-    Ok(servers::list_private(&app))
+    Ok(servers::list_private_view(&app))
 }
 
-/// Add or update a saved private server; returns the refreshed list.
+/// Add or update a saved private server; returns the refreshed redacted list.
 #[tauri::command]
-fn save_private_server(app: AppHandle, server: servers::PrivateServer) -> Result<Vec<servers::PrivateServer>, String> {
+fn save_private_server(app: AppHandle, server: servers::PrivateServer) -> Result<Vec<servers::PrivateServerView>, String> {
     require_login(&app)?;
     servers::upsert_private(&app, server)
 }
 
-/// Remove a saved private server by id; returns the refreshed list.
+/// Remove a saved private server by id; returns the refreshed redacted list.
 #[tauri::command]
-fn remove_private_server(app: AppHandle, id: String) -> Result<Vec<servers::PrivateServer>, String> {
+fn remove_private_server(app: AppHandle, id: String) -> Result<Vec<servers::PrivateServerView>, String> {
     require_login(&app)?;
     servers::remove_private(&app, &id)
 }
@@ -1047,6 +1080,7 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .invoke_handler(tauri::generate_handler![
             eula_status,
+            at_rest_sealed,
             accept_app_eula,
             login,
             get_account,

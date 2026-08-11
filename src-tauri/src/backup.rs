@@ -23,6 +23,8 @@ const EXCLUDE_TOP: &[&str] = &[BACKUP_DIR, "Cache", "Logs"];
 /// Top-level files never included (our own metadata; restoring it would revert
 /// name/version/playtime to snapshot time).
 const EXCLUDE_TOP_FILE: &[&str] = &["translocator.json"];
+/// Written into the zip with its credentials removed rather than verbatim.
+const SANITIZE_TOP_FILE: &str = "clientsettings.json";
 
 #[derive(Serialize)]
 pub struct BackupInfo {
@@ -192,14 +194,50 @@ fn zip_dir_recursive<W: std::io::Write + std::io::Seek>(
         if ft.is_dir() {
             zip_dir_recursive(zw, base, &path, opts)?;
         } else if ft.is_file() {
+            // The settings file carries the account's live session and the
+            // passwords to every saved server, and a backup zip is made to be
+            // moved somewhere else. It goes in scrubbed, or not at all: if it
+            // cannot be parsed it cannot be scrubbed, and a lost settings file
+            // is a smaller loss than a leaked session key.
+            let sanitized = if is_top && name == SANITIZE_TOP_FILE {
+                match sanitized_clientsettings(&path) {
+                    Some(text) => Some(text),
+                    None => continue,
+                }
+            } else {
+                None
+            };
+
             let rel = path.strip_prefix(base).map_err(|e| e.to_string())?;
             let rel_str = rel.to_string_lossy().replace('\\', "/");
             zw.start_file(rel_str, opts).map_err(|e| format!("zip entry failed: {e}"))?;
-            let mut f = std::fs::File::open(&path).map_err(|e| e.to_string())?;
-            std::io::copy(&mut f, zw).map_err(|e| format!("zip write failed: {e}"))?;
+            match sanitized {
+                Some(text) => std::io::Write::write_all(zw, text.as_bytes())
+                    .map_err(|e| format!("zip write failed: {e}"))?,
+                None => {
+                    let mut f = std::fs::File::open(&path).map_err(|e| e.to_string())?;
+                    std::io::copy(&mut f, zw).map_err(|e| format!("zip write failed: {e}"))?;
+                }
+            }
         }
     }
     Ok(())
+}
+
+/// `clientsettings.json` with the session fields and saved server passwords
+/// removed, ready to write into a backup zip. `None` when the file cannot be
+/// read or parsed, which the caller treats as "leave it out of the backup".
+///
+/// Restoring such a backup therefore restores keybinds, graphics and the server
+/// list, but not the login or the server passwords. Both are re-supplied by the
+/// launcher: `session::stamp_session` runs before every launch, and the sealed
+/// private-server store writes passwords back on the next join.
+fn sanitized_clientsettings(path: &Path) -> Option<String> {
+    let text = std::fs::read_to_string(path).ok()?;
+    let mut v: serde_json::Value = serde_json::from_str(&text).ok()?;
+    crate::installations::strip_auth(&mut v);
+    crate::installations::strip_server_passwords(&mut v);
+    serde_json::to_string_pretty(&v).ok()
 }
 
 fn count_zips_in_dir(dir: &Path) -> usize {
@@ -385,4 +423,52 @@ pub fn prune_backups(install_dir: &Path, keep: usize) -> Result<(), String> {
         let _ = std::fs::remove_dir_all(root.join(id));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Read;
+
+    /// The finding this guards: a full backup zip is meant to be moved off the
+    /// machine, and it used to carry the account session and every saved server
+    /// password verbatim inside clientsettings.json.
+    #[test]
+    fn full_backup_carries_no_credentials() {
+        let tmp = std::env::temp_dir().join(format!("tl-backup-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(tmp.join("Mods")).unwrap();
+        std::fs::write(
+            tmp.join("clientsettings.json"),
+            r#"{"stringSettings":{"sessionkey":"LIVEKEY","useremail":"a@b.c","guiScale":"1.0"},
+                "stringListSettings":{"multiplayerservers":["Q,q.example:42420,HUNTER2"]}}"#,
+        )
+        .unwrap();
+
+        backup_install(&tmp, 1, 5).unwrap();
+
+        let zip_path = std::fs::read_dir(tmp.join(BACKUP_DIR))
+            .unwrap()
+            .flatten()
+            .map(|e| e.path())
+            .find(|p| p.extension().map(|x| x == "zip").unwrap_or(false))
+            .expect("no backup zip produced");
+
+        let mut archive = zip::ZipArchive::new(std::fs::File::open(&zip_path).unwrap()).unwrap();
+        let mut settings = String::new();
+        archive
+            .by_name("clientsettings.json")
+            .expect("settings file missing from the backup")
+            .read_to_string(&mut settings)
+            .unwrap();
+
+        for secret in ["LIVEKEY", "a@b.c", "HUNTER2"] {
+            assert!(!settings.contains(secret), "{secret} leaked into the backup zip");
+        }
+        // ...while the settings worth restoring survived.
+        assert!(settings.contains("guiScale"));
+        assert!(settings.contains("q.example:42420"));
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
 }

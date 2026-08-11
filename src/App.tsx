@@ -119,7 +119,11 @@ type PublicServer = {
   playstyle: string;
   description: string;
 };
-type PrivateServer = { id: string; name: string; address: string; password: string; install_path: string };
+/// As it comes back from the backend: the saved password is never sent to the
+/// webview, only whether there is one. `password` exists on the draft alone, to
+/// carry newly typed input in the other direction.
+type PrivateServer = { id: string; name: string; address: string; has_password: boolean; install_path: string };
+type PrivateServerDraft = PrivateServer & { password: string };
 // ---- Curator (src-tauri/src/curator.rs) ----
 type Unresolved = { filename: string; modid: string; version: string; reason: string };
 type CuratorPreview = { manifest: PackManifest; unresolved: Unresolved[]; resolved_count: number };
@@ -142,7 +146,9 @@ type Theme = "almanac" | "workshop" | "terminal";
 // ---- App EULA (shown before the login wall; acceptance version-stamped) ----
 // Bump the version only on MATERIAL changes: it re-prompts every user.
 const APP_EULA_VERSION = "1.2";
-const APP_EULA: { h: string; p: string }[] = [
+// `sealed` is what the backend reports from `at_rest_sealed`: whether this
+// build actually encrypts stored secrets. It only changes section 4.
+const appEulaSections = (AT_REST_SEALED: boolean): { h: string; p: string }[] => [
   {
     h: "1. Independent project",
     p: "Translocator is an independent, community-developed launcher by Lueken Good Design LLC. It is not affiliated with, endorsed by, sponsored by, or associated with Anego Studios or the Vintage Story development team. \"Vintage Story\" and related marks are trademarks of Anego Studios. All rights to the game, its assets, and its intellectual property belong to their respective owners. Mods remain the property of their authors.",
@@ -157,7 +163,12 @@ const APP_EULA: { h: string; p: string }[] = [
   },
   {
     h: "4. Your account and data",
-    p: "Your credentials are sent only to Vintage Story's official authentication servers, never to Translocator's operator or any third party. Your session is stored encrypted on this machine, tied to your Windows user account. Translocator collects no telemetry.",
+    // Section 5 invites the reader to check these claims against the source, so
+    // this one has to survive that check on whatever platform they are running.
+    // Only the Windows build encrypts at rest; see `at_rest_sealed`.
+    p: AT_REST_SEALED
+      ? "Your credentials are sent only to Vintage Story's official authentication servers, never to Translocator's operator or any third party. Your session is stored encrypted on this machine, tied to your Windows user account. Translocator collects no telemetry."
+      : "Your credentials are sent only to Vintage Story's official authentication servers, never to Translocator's operator or any third party. Your session is stored on this machine WITHOUT operating-system encryption: this is not a Windows build, and Windows is the only platform where Translocator seals stored secrets (with DPAPI, tied to your user account). On this platform the stored session, any saved server passwords, and the pack signing key are readable by anything that can read your files. Translocator collects no telemetry.",
   },
   {
     h: "5. License and source code",
@@ -360,6 +371,9 @@ function App() {
   const [authChecked, setAuthChecked] = useState(false);
   // null = still reading the record; false = notice must be shown; true = clear.
   const [appEulaOk, setAppEulaOk] = useState<boolean | null>(null);
+  // Whether this build encrypts stored secrets. Defaults to the shipped case
+  // (Windows/DPAPI); the backend corrects it on start.
+  const [atRestSealed, setAtRestSealed] = useState(true);
   const [installs, setInstalls] = useState<InstallationCard[]>([]);
   const [editing, setEditing] = useState<InstallationCard | null>(null);
   const [draft, setDraft] = useState<InstallationMeta | null>(null);
@@ -428,7 +442,7 @@ function App() {
   const [joinInstall, setJoinInstall] = useState("");
   const [joinPassword, setJoinPassword] = useState("");
   const [privateServers, setPrivateServers] = useState<PrivateServer[]>([]);
-  const [privDraft, setPrivDraft] = useState<PrivateServer | null>(null);
+  const [privDraft, setPrivDraft] = useState<PrivateServerDraft | null>(null);
 
   // ---- Curator ----
   const [curInstall, setCurInstall] = useState("");
@@ -538,6 +552,11 @@ function App() {
         setAppEulaOk((await invoke<string | null>("eula_status")) === APP_EULA_VERSION);
       } catch {
         setAppEulaOk(false);
+      }
+      try {
+        setAtRestSealed(await invoke<boolean>("at_rest_sealed"));
+      } catch {
+        // Leave the default. Official builds are Windows, where this is true.
       }
       const acct = await invoke<Account | null>("get_account");
       if (acct) {
@@ -679,6 +698,9 @@ function App() {
         setAccount(res.account);
         setPrelogintoken(null);
         setTotp("");
+        // Drop the password as soon as it has done its job. It is only cleared
+        // on success: a wrong 2FA code should not cost you the whole form.
+        setPassword("");
         say(`Logged in as ${res.account.playername}.`);
         toast(`Signed in as ${res.account.playername}`);
         await bootstrapWorkspace();
@@ -698,11 +720,16 @@ function App() {
   }
   async function doLogout() {
     try {
-      await invoke("logout");
+      // The backend also strips the session the game leaves in each install's
+      // clientsettings.json, so it needs to know where they live.
+      await invoke("logout", { installationsDir });
     } catch (e) {
       say(`Logout error: ${e}`);
     }
     setAccount(null);
+    setPassword("");
+    setTotp("");
+    setPrelogintoken(null);
     setView("installations");
     say("Logged out.");
   }
@@ -854,14 +881,17 @@ function App() {
     setJoinInstall(match?.path ?? "");
     setJoinPassword("");
   }
-  async function connectServer(name: string, address: string, installDir: string, password: string) {
+  // `savedServerId` joins a saved server: the backend looks its password up in
+  // the sealed store, so we never hold one here. `password` is for the public
+  // browser, where the user types one for a server they have not saved.
+  async function connectServer(name: string, address: string, installDir: string, password: string | null, savedServerId?: string) {
     if (!account) return;
     setJoinServer(null);
     setBusy(true);
     const inst = installs.find((i) => i.path === installDir);
     try {
       say(`▶ Connecting to ${name || address} via ${inst?.meta.name ?? installDir} ...`);
-      const res = await invoke<PlayResult>("connect_server", { gameExe, installDir, address, password: password || null });
+      const res = await invoke<PlayResult>("connect_server", { gameExe, installDir, address, password: password || null, savedServerId: savedServerId ?? null });
       if (res.status === "needsVersion") {
         toast(`Vintage Story ${res.version} isn't downloaded yet. Press Play on the installation once to fetch it, then join.`, undefined, false);
       } else if (res.status === "needsRelogin") {
@@ -904,12 +934,14 @@ function App() {
     }
   }
   function openAddPrivate() {
-    setPrivDraft({ id: crypto.randomUUID(), name: "", address: "", password: "", install_path: target || installs[0]?.path || "" });
+    setPrivDraft({ id: crypto.randomUUID(), name: "", address: "", password: "", has_password: false, install_path: target || installs[0]?.path || "" });
   }
-  async function savePrivateServer(s: PrivateServer) {
+  async function savePrivateServer(s: PrivateServerDraft) {
     const address = s.address.trim();
     if (!address) return;
     try {
+      // An empty password means "keep whatever is stored"; the backend never
+      // sent us the old one to echo back.
       const list = await invoke<PrivateServer[]>("save_private_server", { server: { ...s, address, name: s.name.trim() } });
       setPrivateServers(list);
       setPrivDraft(null);
@@ -2010,7 +2042,7 @@ function App() {
                 </div>
               </div>
               <div className="eula-scroll">
-                {APP_EULA.map((s) => (
+                {appEulaSections(atRestSealed).map((s) => (
                   <div key={s.h}>
                     <div className="eula-h">{s.h}</div>
                     <p className="eula-p">{s.p}</p>
@@ -2584,7 +2616,7 @@ function App() {
                                 <div className="srv-addr tab">{s.address}</div>
                                 <div className="srv-badges">
                                   {inst ? <span className="sbadge ver">{inst.meta.name}</span> : <span className="sbadge warn">no installation set</span>}
-                                  {s.password && <span className="sbadge">password saved</span>}
+                                  {s.has_password && <span className="sbadge">password saved</span>}
                                 </div>
                               </div>
                               <div className="srv-acts">
@@ -2592,11 +2624,11 @@ function App() {
                                   className="cta"
                                   disabled={!account || busy || !s.install_path}
                                   title={!account ? "Sign in first" : !s.install_path ? "Edit this server to set an installation" : undefined}
-                                  onClick={() => connectServer(s.name, s.address, s.install_path, s.password)}
+                                  onClick={() => connectServer(s.name, s.address, s.install_path, null, s.id)}
                                 >
                                   Join
                                 </button>
-                                <button className="mini" onClick={() => setPrivDraft({ ...s })}>Edit</button>
+                                <button className="mini" onClick={() => setPrivDraft({ ...s, password: "" })}>Edit</button>
                                 <button className="mini danger-mini" onClick={() => removePrivateServer(s.id)}>Remove</button>
                               </div>
                             </div>
@@ -3480,8 +3512,10 @@ function App() {
                 <option value="">none yet</option>
                 {installs.map((i) => (<option key={i.path} value={i.path}>{i.meta.name}{i.meta.version ? ` (${i.meta.version})` : ""}</option>))}
               </select></label>
-            <label className="field"><span className="lab">Password <span className="lab-hint">(optional, stored sealed on this PC)</span></span>
-              <input type="password" autoComplete="off" value={privDraft.password} onChange={(e) => setPrivDraft({ ...privDraft, password: e.target.value })} /></label>
+            <label className="field"><span className="lab">Password <span className="lab-hint">{privDraft.has_password ? "(saved on this PC; leave blank to keep it)" : "(optional, stored sealed on this PC)"}</span></span>
+              <input type="password" autoComplete="off" value={privDraft.password}
+                placeholder={privDraft.has_password ? "unchanged" : ""}
+                onChange={(e) => setPrivDraft({ ...privDraft, password: e.target.value })} /></label>
             <div className="acts">
               <button className="btn" onClick={() => setPrivDraft(null)}>Cancel</button>
               <button className="cta" disabled={!privDraft.address.trim()} onClick={() => savePrivateServer(privDraft)}>Save server</button>

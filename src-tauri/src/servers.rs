@@ -131,10 +131,53 @@ pub struct PrivateServer {
     pub install_path: String,
 }
 
+/// What the webview is allowed to know about a saved server.
+///
+/// Same boundary as `AccountView`: the password stays on the Rust side, which
+/// is the only place that needs it (it goes to the game as `--connect --pw`).
+/// Handing it to JS put a plaintext server password one `console.log` - or one
+/// XSS in a mod description - away from anything running in the webview, for no
+/// functional gain. `has_password` is all the UI ever did with it.
+#[derive(Serialize)]
+pub struct PrivateServerView {
+    pub id: String,
+    pub name: String,
+    pub address: String,
+    pub has_password: bool,
+    pub install_path: String,
+}
+
+impl From<&PrivateServer> for PrivateServerView {
+    fn from(s: &PrivateServer) -> Self {
+        Self {
+            id: s.id.clone(),
+            name: s.name.clone(),
+            address: s.address.clone(),
+            has_password: !s.password.is_empty(),
+            install_path: s.install_path.clone(),
+        }
+    }
+}
+
 pub fn list_private(app: &AppHandle) -> Vec<PrivateServer> {
     store::load_sealed(app, PRIVATE_FILE)
         .and_then(|b| serde_json::from_slice(&b).ok())
         .unwrap_or_default()
+}
+
+/// The redacted list, which is what every command hands back to the frontend.
+pub fn list_private_view(app: &AppHandle) -> Vec<PrivateServerView> {
+    list_private(app).iter().map(PrivateServerView::from).collect()
+}
+
+/// The saved password for one server, looked up on the Rust side at join time
+/// so it never makes a round trip through the webview.
+pub fn password_for(app: &AppHandle, id: &str) -> Option<String> {
+    list_private(app)
+        .into_iter()
+        .find(|s| s.id == id)
+        .map(|s| s.password)
+        .filter(|p| !p.is_empty())
 }
 
 fn save_private(app: &AppHandle, list: &[PrivateServer]) -> Result<(), String> {
@@ -143,8 +186,16 @@ fn save_private(app: &AppHandle, list: &[PrivateServer]) -> Result<(), String> {
 }
 
 /// Add a new saved server, or update the existing one with the same `id`.
-/// Returns the full list so the UI can refresh in one round trip.
-pub fn upsert_private(app: &AppHandle, mut s: PrivateServer) -> Result<Vec<PrivateServer>, String> {
+/// Returns the refreshed redacted list so the UI can update in one round trip.
+///
+/// An empty incoming password means "leave the stored one alone", because the
+/// edit form no longer receives the password it would otherwise echo back. To
+/// drop a saved password, remove the server and add it again - the form says
+/// so. Anything non-empty replaces what was there.
+pub fn upsert_private(
+    app: &AppHandle,
+    mut s: PrivateServer,
+) -> Result<Vec<PrivateServerView>, String> {
     s.address = s.address.trim().to_string();
     if s.address.is_empty() {
         return Err("server address is empty".into());
@@ -154,16 +205,21 @@ pub fn upsert_private(app: &AppHandle, mut s: PrivateServer) -> Result<Vec<Priva
     }
     let mut list = list_private(app);
     match list.iter_mut().find(|x| x.id == s.id) {
-        Some(existing) => *existing = s,
+        Some(existing) => {
+            if s.password.is_empty() {
+                s.password = std::mem::take(&mut existing.password);
+            }
+            *existing = s;
+        }
         None => list.push(s),
     }
     save_private(app, &list)?;
-    Ok(list)
+    Ok(list.iter().map(PrivateServerView::from).collect())
 }
 
-pub fn remove_private(app: &AppHandle, id: &str) -> Result<Vec<PrivateServer>, String> {
+pub fn remove_private(app: &AppHandle, id: &str) -> Result<Vec<PrivateServerView>, String> {
     let mut list = list_private(app);
     list.retain(|x| x.id != id);
     save_private(app, &list)?;
-    Ok(list)
+    Ok(list.iter().map(PrivateServerView::from).collect())
 }

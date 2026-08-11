@@ -15,6 +15,31 @@ const AUTH_BASE: &str = "https://auth3.vintagestory.at";
 // Sent verbatim by the game; the server is lenient but expects the field.
 const GAME_LOGIN_VERSION: &str = "1.22.0";
 
+/// Client for the calls in this module. Every one of them puts a credential in
+/// the request BODY - the account password, or the session key - and reqwest
+/// follows redirects by default, replaying that body on a 307 or 308. A
+/// redirect away from the auth host would therefore hand the password to
+/// whatever host the redirect named. None of these endpoints redirects, so
+/// refuse to follow one and treat it as the anomaly it would be.
+fn auth_client() -> Result<reqwest::Client, String> {
+    reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|e| format!("http client init failed: {e}"))
+}
+
+/// Fail loudly on a redirect rather than letting it fall through to a JSON
+/// parse error that reads like the account server is broken.
+fn refuse_redirect(resp: &reqwest::Response, what: &str) -> Result<(), String> {
+    if resp.status().is_redirection() {
+        return Err(format!(
+            "{what}: the account server tried to redirect the request ({}). Refused, because the request carries your credentials.",
+            resp.status().as_u16()
+        ));
+    }
+    Ok(())
+}
+
 #[derive(Debug, Deserialize)]
 pub struct LoginResponse {
     #[serde(default)]
@@ -54,12 +79,13 @@ pub async fn game_login(
         ("prelogintoken", prelogin.unwrap_or("")),
         ("gameloginversion", GAME_LOGIN_VERSION),
     ];
-    let resp = reqwest::Client::new()
+    let resp = auth_client()?
         .post(format!("{AUTH_BASE}/v2/gamelogin"))
         .form(&params)
         .send()
         .await
         .map_err(|e| format!("gamelogin request failed: {e}"))?;
+    refuse_redirect(&resp, "gamelogin")?;
     resp.json::<LoginResponse>()
         .await
         .map_err(|e| format!("gamelogin parse failed: {e}"))
@@ -84,12 +110,13 @@ pub struct ValidateResponse {
 /// rotated out and the user must log in again.
 pub async fn client_validate(uid: &str, sessionkey: &str) -> Result<ValidateResponse, String> {
     let params = [("uid", uid), ("sessionkey", sessionkey)];
-    let resp = reqwest::Client::new()
+    let resp = auth_client()?
         .post(format!("{AUTH_BASE}/clientvalidate"))
         .form(&params)
         .send()
         .await
         .map_err(|e| format!("clientvalidate request failed: {e}"))?;
+    refuse_redirect(&resp, "clientvalidate")?;
     resp.json::<ValidateResponse>()
         .await
         .map_err(|e| format!("clientvalidate parse failed: {e}"))
@@ -120,12 +147,13 @@ pub async fn request_mptoken(
         ("serverlogintoken", serverlogintoken),
         ("sessionkey", sessionkey),
     ];
-    let resp = reqwest::Client::new()
+    let resp = auth_client()?
         .post(format!("{AUTH_BASE}/v2.1/clientrequestmptoken"))
         .form(&params)
         .send()
         .await
         .map_err(|e| format!("mptoken request failed: {e}"))?;
+    refuse_redirect(&resp, "mptoken")?;
     let r: MpTokenResponse = resp
         .json()
         .await

@@ -237,7 +237,8 @@ pub(crate) fn slugify(name: &str) -> String {
 }
 
 /// Auth/session fields that must NEVER be copied between installs (copying a
-/// stale session is the exact bug that breaks the incumbents' carryover).
+/// stale session is the exact bug that breaks the incumbents' carryover), and
+/// that must never leave this machine inside a backup zip.
 const AUTH_KEYS: &[&str] = &[
     "sessionkey",
     "sessionsignature",
@@ -249,6 +250,93 @@ const AUTH_KEYS: &[&str] = &[
     "hostgameserver",
 ];
 
+/// Remove the auth/session fields from a parsed clientsettings.json. Returns
+/// true if anything was actually removed. Shared by install seeding, backup
+/// sanitising and the logout scrub, so the three can never drift apart.
+pub fn strip_auth(v: &mut serde_json::Value) -> bool {
+    let Some(ss) = v.get_mut("stringSettings").and_then(|s| s.as_object_mut()) else {
+        return false;
+    };
+    let mut hit = false;
+    for k in AUTH_KEYS {
+        hit |= ss.remove(*k).is_some();
+    }
+    hit
+}
+
+/// Blank the password column of every saved multiplayer server. VS stores each
+/// entry as `name,host:port,password` under `stringListSettings
+/// .multiplayerservers` (see session::add_multiplayer_server), so this keeps
+/// the server list intact and drops only the credential. Returns true if any
+/// entry changed.
+///
+/// Used on the backup path only: a backup zip is made to be moved somewhere
+/// else, and these are real passwords to other people's servers. The launcher
+/// keeps its own sealed copy, so connecting through Translocator writes them
+/// back on the next join.
+pub fn strip_server_passwords(v: &mut serde_json::Value) -> bool {
+    let Some(list) = v
+        .get_mut("stringListSettings")
+        .and_then(|s| s.as_object_mut())
+        .and_then(|o| o.get_mut("multiplayerservers"))
+        .and_then(|l| l.as_array_mut())
+    else {
+        return false;
+    };
+    let mut hit = false;
+    for entry in list.iter_mut() {
+        let Some(s) = entry.as_str() else { continue };
+        // Only the first two commas are structural; anything after them is the
+        // password, however many commas the user managed to put in it.
+        let mut parts = s.splitn(3, ',');
+        let (Some(name), Some(addr)) = (parts.next(), parts.next()) else {
+            continue;
+        };
+        let pw = parts.next().unwrap_or("");
+        if pw.is_empty() {
+            continue;
+        }
+        *entry = serde_json::json!(format!("{name},{addr},"));
+        hit = true;
+    }
+    hit
+}
+
+/// Read an install's clientsettings.json, strip the auth/session fields, and
+/// write it back. `Ok(false)` when there was no file or nothing to remove.
+/// This is what logout uses so signing out clears the live session key the game
+/// left in every install, not just our own account.dat.
+pub fn scrub_session(install_dir: &Path) -> Result<bool, String> {
+    let path = install_dir.join("clientsettings.json");
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return Ok(false);
+    };
+    let mut v: serde_json::Value = match serde_json::from_str(&text) {
+        Ok(v) => v,
+        // A corrupt settings file is the game's problem, not ours; leave it be
+        // rather than rewriting something we could not parse.
+        Err(_) => return Ok(false),
+    };
+    if !strip_auth(&mut v) {
+        return Ok(false);
+    }
+    let out = serde_json::to_string_pretty(&v).map_err(|e| e.to_string())?;
+    std::fs::write(&path, out).map_err(|e| e.to_string())?;
+    Ok(true)
+}
+
+/// Every install folder's clientsettings.json under `installations_dir`, with
+/// the auth fields removed. Returns how many files were actually rewritten.
+pub fn scrub_all_sessions(installations_dir: &Path) -> usize {
+    let Ok(rd) = std::fs::read_dir(installations_dir) else {
+        return 0;
+    };
+    rd.flatten()
+        .filter(|e| e.path().is_dir())
+        .filter(|e| scrub_session(&e.path()).unwrap_or(false))
+        .count()
+}
+
 /// Copy the game's client settings (keybinds, graphics, audio, GUI scale, ...)
 /// from `source_dir` into `dest_dir`, STRIPPING the auth/session fields so a new
 /// install inherits your dialed-in settings but gets its own freshly stamped
@@ -259,11 +347,7 @@ pub fn seed_clientsettings(source_dir: &Path, dest_dir: &Path) -> Result<bool, S
         Err(_) => return Ok(false),
     };
     let mut v: serde_json::Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
-    if let Some(ss) = v.get_mut("stringSettings").and_then(|s| s.as_object_mut()) {
-        for k in AUTH_KEYS {
-            ss.remove(*k);
-        }
-    }
+    strip_auth(&mut v);
     // The mod paths must belong to the DESTINATION install. The relative
     // "Mods" entry is the game folder's bundled system mods; the absolute
     // entry is this install's own Mods dir. Copying the source's absolute
@@ -324,4 +408,80 @@ pub fn delete(path: &Path) -> Result<(), String> {
         path.to_path_buf()
     };
     std::fs::remove_dir_all(&target).map_err(|e| format!("delete failed: {e}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn settings() -> serde_json::Value {
+        json!({
+            "stringSettings": {
+                "sessionkey": "live-key",
+                "sessionsignature": "sig",
+                "mptoken": "mp",
+                "useremail": "someone@example.com",
+                "playeruid": "uid",
+                "playername": "Venah",
+                "guiScale": "1.0"
+            },
+            "stringListSettings": {
+                // `name,host:port,password`, per session::add_multiplayer_server,
+                // which strips commas from the name. So only the password can
+                // contain one, and everything past the second comma is password.
+                "multiplayerservers": [
+                    "The Quire,quire.example:42420,hunter2",
+                    "No password,other.example:42420,",
+                    "Third,third.example:42420,pw,with,commas"
+                ],
+                "modPaths": ["Mods"]
+            }
+        })
+    }
+
+    #[test]
+    fn strip_auth_removes_every_credential_and_keeps_the_rest() {
+        let mut v = settings();
+        assert!(strip_auth(&mut v));
+        let ss = v["stringSettings"].as_object().unwrap();
+        for k in AUTH_KEYS {
+            assert!(!ss.contains_key(*k), "{k} survived the strip");
+        }
+        // Settings the user cares about are untouched.
+        assert_eq!(ss["guiScale"], json!("1.0"));
+        // Nothing left to do the second time.
+        assert!(!strip_auth(&mut v));
+    }
+
+    #[test]
+    fn server_passwords_are_blanked_but_the_list_survives() {
+        let mut v = settings();
+        assert!(strip_server_passwords(&mut v));
+        let list = v["stringListSettings"]["multiplayerservers"].as_array().unwrap();
+        assert_eq!(list[0], json!("The Quire,quire.example:42420,"));
+        assert_eq!(list[1], json!("No password,other.example:42420,"));
+        // A password containing commas is still only ONE field: everything
+        // after the second comma goes, or the tail leaks.
+        assert_eq!(list[2], json!("Third,third.example:42420,"));
+        assert!(!strip_server_passwords(&mut v));
+    }
+
+    #[test]
+    fn a_sanitized_file_contains_no_secret_substring() {
+        let mut v = settings();
+        strip_auth(&mut v);
+        strip_server_passwords(&mut v);
+        let text = serde_json::to_string(&v).unwrap();
+        for secret in ["live-key", "someone@example.com", "hunter2", "pw,with,commas"] {
+            assert!(!text.contains(secret), "{secret} still present in {text}");
+        }
+    }
+
+    #[test]
+    fn missing_sections_are_not_an_error() {
+        let mut empty = json!({});
+        assert!(!strip_auth(&mut empty));
+        assert!(!strip_server_passwords(&mut empty));
+    }
 }
