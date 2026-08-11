@@ -37,6 +37,26 @@ fn version_at_least(have: &str, need: &str) -> bool {
     true
 }
 
+/// A pack id we are willing to put in a filesystem path.
+///
+/// The Hub validates this too, but the Hub is the party we are defending
+/// against here: the manifest arrives over the network and the id lands in
+/// `.pack-stage-{id}`, a directory that gets `remove_dir_all`d. A hostile or
+/// compromised Hub serving `../../..` would have deleted whatever that
+/// resolved to. Same rule both ends: lowercase, digits, hyphen, 2 to 64.
+pub fn safe_pack_id(id: &str) -> bool {
+    let n = id.len();
+    if !(2..=64).contains(&n) {
+        return false;
+    }
+    let mut chars = id.chars();
+    let first = chars.next().unwrap_or(' ');
+    if !first.is_ascii_lowercase() && !first.is_ascii_digit() {
+        return false;
+    }
+    id.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+}
+
 /// `"<id>@<version>"` for the freeze; split back with [`parse_managed`].
 pub fn managed_key(pack_id: &str, version: &str) -> String {
     format!("{pack_id}@{version}")
@@ -285,8 +305,27 @@ pub async fn install_pack(
     seed_from: Option<String>,
     optional_choices: BTreeMap<String, bool>,
 ) -> Result<String, String> {
-    // Step 0: the manifest, and the launcher-version gate before anything else.
+    // Step 0: the id itself, before it is used to build any path. Checked here
+    // rather than deeper down because `pack_id` reaches the filesystem in
+    // step 3, and a rejected install is a far better outcome than a deleted
+    // directory outside the installations folder.
+    if !safe_pack_id(pack_id) {
+        return Err(format!(
+            "refusing to install '{pack_id}': a pack id must be 2 to 64 characters of lowercase letters, digits and hyphens"
+        ));
+    }
+
+    // The manifest, and the launcher-version gate before anything else.
     let manifest = crate::hub::pack_manifest(hub_url, pack_id, None).await?;
+
+    // The manifest's own id must agree with the one we asked for, or the
+    // staging path and the freeze key would describe different packs.
+    if manifest.pack.id != pack_id {
+        return Err(format!(
+            "the Hub returned a manifest for '{}' when asked for '{pack_id}'",
+            manifest.pack.id
+        ));
+    }
     let app_version = env!("CARGO_PKG_VERSION");
     if !version_at_least(app_version, &manifest.pack.min_launcher_version) {
         return Err(format!(
@@ -381,6 +420,47 @@ pub async fn install_pack(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pack_ids_that_reach_the_filesystem_are_narrow() {
+        // The staging directory is `.pack-stage-{id}` and stage_all opens by
+        // calling remove_dir_all on it, so anything that could climb out of the
+        // installations folder has to be refused before it is joined to a path.
+        let long_ok = "x".repeat(64);
+        let too_long = "x".repeat(65);
+        for good in ["the-quire-server-pack", "ok-2", "a1", long_ok.as_str()] {
+            assert!(safe_pack_id(good), "should accept {good}");
+        }
+        let nul = String::from("bad") + &String::from_utf8(vec![0]).unwrap();
+        for bad in [
+            "../../../evil",
+            "a/b",
+            "a",
+            "",
+            "A-Pack",
+            "-leading",
+            "with space",
+            "under_score",
+            nul.as_str(),
+            too_long.as_str(),
+        ] {
+            assert!(!safe_pack_id(bad), "should reject {bad:?}");
+        }
+    }
+
+    #[test]
+    fn the_naive_stage_path_really_did_escape() {
+        // Documents the bug this guards, so nobody later decides the check is
+        // paranoid: joined without validation, a traversing id climbs out.
+        let hostile = "../../../../Windows";
+        assert!(!safe_pack_id(hostile), "the guard must reject it");
+        let joined = std::path::Path::new("C:/installs").join(format!(".pack-stage-{hostile}"));
+        let climbs = joined
+            .components()
+            .filter(|c| matches!(c, std::path::Component::ParentDir))
+            .count();
+        assert!(climbs > 0, "the unvalidated join contains parent refs");
+    }
 
     #[test]
     fn version_gate() {
