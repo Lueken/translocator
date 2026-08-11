@@ -1,0 +1,89 @@
+name: CI
+
+# The point of this file is that the tests actually run. Ten unit tests that
+# nobody executes protect nothing, and two of them exist specifically to stop a
+# credential leak from coming back.
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+  workflow_dispatch:
+
+# A newer push to the same branch supersedes the run in flight.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  web:
+    name: Frontend
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      # `npm run build` is `tsc && vite build`, so this typechecks and bundles.
+      - run: npm run build
+      # High and above fails the build. Moderate/low in the vite toolchain are
+      # build-time only and would turn this job into noise nobody reads.
+      - name: npm audit
+        run: npm audit --audit-level=high
+
+  rust:
+    name: Backend (Windows)
+    # Windows is the shipping target and the only platform where the DPAPI path
+    # compiles at all, so that is where the tests have to run.
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - name: cargo test
+        working-directory: src-tauri
+        run: cargo test --lib
+      - name: cargo check
+        working-directory: src-tauri
+        run: cargo check --all-targets
+      # Regression guard for the security fix: `devtools` is an opt-in feature
+      # precisely so a shipped build cannot open an inspector over a signed-in
+      # window. If it ever creeps back into the default resolution, fail here
+      # rather than in someone's hands.
+      - name: devtools must be off by default
+        working-directory: src-tauri
+        shell: bash
+        run: |
+          # grep rather than `head`: cargo may print progress lines first.
+          feats=$(cargo tree -p tauri -f "{p} {f}" --depth 0 | grep '^tauri ')
+          echo "tauri features: $feats"
+          if echo "$feats" | grep -q devtools; then
+            echo "::error::devtools is enabled in a default build. It must stay opt-in (--features devtools)."
+            exit 1
+          fi
+
+  audit:
+    name: Rust advisories
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      # A prebuilt binary, so this runs the same `cargo audit` that was checked
+      # locally rather than a wrapper with its own opinion about what fails.
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+      # Fails on vulnerabilities. As of the last local run the tree has none,
+      # and 18 informational warnings - unmaintained gtk/gdk/atk/glib and the
+      # unic-* crates - which are Tauri's Linux backend and never compile into
+      # the Windows binary. Those stay warnings on purpose; promoting them to
+      # errors would make this job red about code we do not ship.
+      - name: cargo audit
+        working-directory: src-tauri
+        run: cargo audit
