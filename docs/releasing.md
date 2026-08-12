@@ -35,19 +35,30 @@ That is the entire lesson of the 0.3.0 release.
 
 ## Building
 
-The signing values come from environment variables, and the variable names are
-not interchangeable:
+The signing values come from environment variables, and **the build and the
+`signer sign` CLI do not read the same ones**. Getting this wrong cost two
+failed attempts on the 0.3.0 release, in both directions.
 
-| Variable | Takes |
-|---|---|
-| `TAURI_SIGNING_PRIVATE_KEY` | the key **contents** as a string |
-| `TAURI_SIGNING_PRIVATE_KEY_PATH` | a **path** to the key file |
-| `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | the password |
+| | `tauri build` | `tauri signer sign` |
+|---|---|---|
+| `TAURI_SIGNING_PRIVATE_KEY` | **this one.** Takes the key contents *or* a path | maps to `-k`, key contents |
+| `TAURI_SIGNING_PRIVATE_KEY_PATH` | ignored | maps to `-f`, a path |
+| `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | yes | yes |
 
-PowerShell:
+Two consequences:
+
+- The bundler only looks at `TAURI_SIGNING_PRIVATE_KEY`. Setting only
+  `_PATH` fails with "a public key has been found, but no private key",
+  which sounds like a missing key rather than a misnamed variable.
+- `signer sign` refuses `-f` while `TAURI_SIGNING_PRIVATE_KEY` is set in the
+  shell, because that env var *is* `-k` and the two conflict. Clear it before
+  probing.
+
+Building, in PowerShell:
 
 ```powershell
-$env:TAURI_SIGNING_PRIVATE_KEY_PATH = "$HOME\.tauri\translocator-v2.key"
+Remove-Item Env:\TAURI_SIGNING_PRIVATE_KEY_PATH -ErrorAction SilentlyContinue
+$env:TAURI_SIGNING_PRIVATE_KEY = "$HOME\.tauri\translocator-v2.key"
 $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = 'single quotes, always'
 npm run tauri build
 ```
@@ -60,9 +71,16 @@ mangled into something else and the failure reads as a wrong password.
 file takes two seconds and a build takes minutes:
 
 ```powershell
+Remove-Item Env:\TAURI_SIGNING_PRIVATE_KEY -ErrorAction SilentlyContinue
 "probe" | Out-File -Encoding ascii $env:TEMP\sigtest.txt
 npx tauri signer sign -f "$HOME\.tauri\translocator-v2.key" -p 'password' $env:TEMP\sigtest.txt
 ```
+
+A `.sig` is not proof on its own; it proves *a* key signed, not the key the app
+trusts. To confirm the signature verifies under the public key actually
+compiled into the build, decode `plugins.updater.pubkey` and the `.sig` (both
+are base64-wrapped) and check the 8-byte key ids in each match. Tauri signs
+prehashed, so the signed message is `blake2b512(file)`, not the file.
 
 **Check the `.sig` exists afterwards.** With the signing variables unset, the
 build succeeds and simply produces no signature, with no error. The updater
