@@ -25,7 +25,7 @@ use crate::store;
 const KEY_FILE: &str = "signing.dat";
 /// Must match the Hub's PAYLOAD_VERSION (canonical.ts) exactly. See that file
 /// for what v3 changed and why.
-const PAYLOAD_VERSION: &str = "translocator-pack-v3";
+pub const PAYLOAD_VERSION: &str = "translocator-pack-v3";
 
 fn b64(bytes: &[u8]) -> String {
     base64::engine::general_purpose::STANDARD.encode(bytes)

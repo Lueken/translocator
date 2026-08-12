@@ -3419,6 +3419,16 @@ function App() {
                   <div className="prog"><i className={versionProgress.pct < 0 ? "indet" : ""} style={versionProgress.pct >= 0 ? { width: `${versionProgress.pct}%` } : { width: "40%" }} /></div>
                 </div>
               )}
+              {packProgress && packProgress.phase === "verified" && (
+                <div className="checking" style={{ padding: "6px 0 10px" }}>
+                  <div className="prog-n tab">
+                    {packProgress.detail
+                      ? `Signature checked. This release was signed by ${packProgress.detail}.`
+                      : "Signature checked."}
+                  </div>
+                  <div className="prog"><i className="indet" style={{ width: "40%" }} /></div>
+                </div>
+              )}
               {packProgress && packProgress.phase === "download" && (
                 <div className="checking" style={{ padding: "6px 0 10px" }}>
                   <div className="prog-n tab">

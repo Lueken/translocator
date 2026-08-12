@@ -9,7 +9,7 @@
 //! to prevent.
 
 use crate::manifest::{Manifest, ManifestMod};
-use crate::{installations, mods, optimum, session, signing, versions};
+use crate::{installations, mods, optimum, pack_verify, session, signing, versions};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::io::Write;
@@ -315,8 +315,10 @@ pub async fn install_pack(
         ));
     }
 
-    // The manifest, and the launcher-version gate before anything else.
-    let manifest = crate::hub::pack_manifest(hub_url, pack_id, None).await?;
+    // The manifest, and the launcher-version gate before anything else. The
+    // served document comes back alongside the typed view because the signature
+    // is over the document (hub::pack_manifest_document explains why).
+    let (manifest_value, manifest) = crate::hub::pack_manifest_document(hub_url, pack_id, None).await?;
 
     // The manifest's own id must agree with the one we asked for, or the
     // staging path and the freeze key would describe different packs.
@@ -333,6 +335,15 @@ pub async fn install_pack(
             manifest.pack.min_launcher_version, app_version
         ));
     }
+
+    // Step 0c: who signed this, and is it the same who signed it last time.
+    // Before the game version, before a single mod byte, because a refusal that
+    // costs nothing is the only kind anyone reads instead of clicking past.
+    let doc = crate::hub::pack_verification(hub_url, pack_id, &manifest.pack.version).await?;
+    let verified = pack_verify::verify_pack(&manifest_value, &doc, pack_id, &manifest.pack.version)?;
+    let pins = installations::pins_for_pack(installations_dir, pack_id);
+    pack_verify::check_pins(&pins, &verified)?;
+    emit_progress(app, pack_id, "verified", &verified.publisher_name, 0, 0, 0, 0);
 
     // Fail the name collision NOW, not after a couple hundred downloads
     // (installations::create re-checks authoritatively at place time).
@@ -411,6 +422,12 @@ pub async fn install_pack(
     meta.pack_owned_files = staged_files;
     meta.override_hashes = override_hashes;
     meta.optional_choices = optional_choices;
+    // The pin. Written only here, only after verify_pack returned a
+    // VerifiedPack, so what gets recorded is the key that demonstrably signed
+    // rather than the key the document claimed.
+    meta.pinned_publisher_uid = verified.uid.clone();
+    meta.pinned_key_fingerprint = verified.key_fingerprint.clone();
+    meta.pinned_sequence = verified.sequence.max(pins.sequence);
     installations::write_meta(&install_dir, &meta)?;
 
     emit_progress(app, pack_id, "done", "", selected.len(), selected.len(), 0, 0);

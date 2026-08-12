@@ -368,6 +368,45 @@ pub fn scrub_all_sessions(installations_dir: &Path) -> usize {
         .count()
 }
 
+/// What this machine already believes about who publishes `pack_id`, gathered
+/// from every installation currently managed by that pack.
+///
+/// Pins live per installation, but the trust decision is about the pack, so a
+/// second install of a pack has to answer to the first one's pins. Without
+/// this, "install it again into a new folder" would be a way to walk past a
+/// publisher change that an update would have stopped, which is the same
+/// bypass, one click further away.
+///
+/// Where several installs disagree the newest one wins, on the reasoning that a
+/// pin the user accepted more recently is the more current statement of who
+/// they trust. The sequence is taken as the highest seen anywhere, so a
+/// downgrade cannot be laundered through the oldest install on the machine.
+pub fn pins_for_pack(installations_dir: &Path, pack_id: &str) -> crate::pack_verify::Pins {
+    let mut pins = crate::pack_verify::Pins::default();
+    let Ok(rd) = std::fs::read_dir(installations_dir) else {
+        return pins;
+    };
+    let mut newest = 0u64;
+    for entry in rd.flatten().filter(|e| e.path().is_dir()) {
+        let Some(meta) = read_meta(&entry.path()) else {
+            continue;
+        };
+        if crate::pack_install::parse_managed(&meta.managed_by).map(|(id, _)| id) != Some(pack_id) {
+            continue;
+        }
+        pins.sequence = pins.sequence.max(meta.pinned_sequence);
+        if meta.pinned_publisher_uid.is_empty() && meta.pinned_key_fingerprint.is_empty() {
+            continue;
+        }
+        if meta.pinned_sequence >= newest || pins.uid.is_empty() {
+            newest = meta.pinned_sequence;
+            pins.uid = meta.pinned_publisher_uid;
+            pins.key_fingerprint = meta.pinned_key_fingerprint;
+        }
+    }
+    pins
+}
+
 /// Copy the game's client settings (keybinds, graphics, audio, GUI scale, ...)
 /// from `source_dir` into `dest_dir`, STRIPPING the auth/session fields so a new
 /// install inherits your dialed-in settings but gets its own freshly stamped
