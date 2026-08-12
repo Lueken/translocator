@@ -13,7 +13,10 @@
 //! publish envelope, so the Hub canonicalizes the same document it received.
 
 use base64::Engine;
-use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
+// verify_strict is an inherent method on VerifyingKey, so the Verifier trait is
+// deliberately not imported: importing it would offer a plain `verify` that
+// accepts small-order keys.
+use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use sha2::{Digest, Sha256};
 use tauri::AppHandle;
 
