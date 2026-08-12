@@ -76,9 +76,30 @@ stored session. Devtools (F12) are enabled in release builds during beta.
 
 ## License
 
-GNU GPL v3.0 with the Commons Clause (see LICENSE): read it, build it,
-modify it, redistribute it under the same terms, but nobody sells it.
+The launcher is free software under **GPL-3.0** (see LICENSE). Fork it, change
+it, redistribute it, sell it. The only obligation is the GPL's own: a modified
+version you distribute stays GPL-3.0 and ships its source.
+
+**What that covers, precisely.** This code: the source in this repository and
+binaries built from it. It does not restrict anyone from writing a Vintage
+Story launcher, and could not; copyright protects expression, not ideas. A
+dozen launchers already exist and more are welcome. Read this repo, understand
+an approach, write your own implementation, and it is yours. What GPL-3.0
+governs is copying from this codebase.
+
+**The Modpack Hub is separate** and not covered here. Its source is not
+published. The launcher reaches it over a public read API, and nothing stops
+anyone running a hub of their own.
+
+This replaced GPL-3.0 with the Commons Clause, which was not open source and
+did not hold together: GPLv3 section 7 lets a recipient strip any term that is
+a further restriction, and a no-sell clause bolted onto a licence that
+expressly permits selling is precisely that. The clause is gone rather than
+redrafted, because any noncompete strong enough to stop a competitor also stops
+the community fork, and for a one-maintainer project that is the worse risk.
+
 Official builds are produced and signed only by Lueken Good Design LLC.
-Contributions are accepted under the grant in CONTRIBUTING.md. Optimum is an
-independent project under its own license (also GPL-3.0 with Commons Clause)
-and is never bundled or redistributed here.
+Contributions are accepted under a Developer Certificate of Origin, no CLA and
+no copyright assignment; see CONTRIBUTING.md. Optimum is an independent project
+under its own license (GPL-3.0 with the Commons Clause) and is never bundled or
+redistributed here.

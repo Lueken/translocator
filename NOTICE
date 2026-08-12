@@ -1,0 +1,48 @@
+Translocator
+Copyright (C) 2026 Lueken Good Design LLC
+
+This program is free software: you can redistribute it and/or modify it under
+the terms of the GNU General Public License as published by the Free Software
+Foundation, either version 3 of the License, or (at your option) any later
+version.
+
+This program is distributed in the hope that it will be useful, but WITHOUT ANY
+WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
+PARTICULAR PURPOSE. See the GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License along with
+this program. If not, see <https://www.gnu.org/licenses/>. The full text is in
+the LICENSE file beside this one, which is kept free of any additional text so
+that automated licence detection identifies it correctly.
+
+
+WHAT THE LICENCE COVERS
+
+It covers this code: the source in this repository and the binaries built from
+it. That is the whole of its reach.
+
+It does not restrict anyone from writing a Vintage Story launcher, and could
+not. Copyright protects expression, not ideas, and there is nothing ownable
+about the concept of a launcher. Several already exist and more are welcome. If
+you read this repository, understand how something works, and write your own
+implementation, that is yours. What GPL-3.0 governs is copying from this
+codebase: build on this source and your work carries the same terms.
+
+The Translocator Modpack Hub is a separate service and is not covered by this
+licence. Its source is not published. The launcher reaches it over a public
+read API, and nothing here prevents anyone from running a hub of their own.
+
+
+THIRD PARTIES
+
+Vintage Story is a trademark of Anego Studios. This project is not affiliated
+with Anego Studios.
+
+Optimum is an independent project by Zaldaryon under its own licence. It is not
+part of, bundled with, or redistributed by this software. Translocator can build
+it on your machine, from your own game files, after showing you its notice and
+recording your acceptance.
+
+Mods installed or referenced by this software remain the property of their
+authors and subject to their own licences. Publishing a modpack through
+Translocator does not transfer any rights in the mods it names.
