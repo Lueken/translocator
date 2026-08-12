@@ -76,6 +76,34 @@ pub struct InstallationMeta {
     /// pack updates. Missing key = the manifest's `required` default.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub optional_choices: BTreeMap<String, bool>,
+
+    // ---- pinned publisher identity (trust on first install) ----
+    //
+    // A verification document cannot vouch for itself: it carries the very key
+    // list it asks you to check it against, so anyone can mint one that
+    // validates. The anchor has to come from outside the document, and the only
+    // thing outside it that the user actually chose is the pack they installed
+    // the first time. So the first install records who signed it, and every
+    // update afterwards must match.
+    //
+    // A changed uid means a different account is publishing under this pack id.
+    // A changed fingerprint means a different device key, which is legitimate
+    // when a publisher adds a machine but is also exactly what a stolen or
+    // relayed key looks like: it stops the update and asks.
+    /// VS account uid that signed the version currently installed.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub pinned_publisher_uid: String,
+    /// `ed25519:...` fingerprint of the key that signed it.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub pinned_key_fingerprint: String,
+    /// Highest signed sequence seen for this pack. An update carrying a lower
+    /// one is a genuine older release being replayed as current, and is refused.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub pinned_sequence: u64,
+}
+
+fn is_zero(v: &u64) -> bool {
+    *v == 0
 }
 
 impl Default for InstallationMeta {
@@ -97,6 +125,9 @@ impl Default for InstallationMeta {
             pack_owned_files: Vec::new(),
             override_hashes: BTreeMap::new(),
             optional_choices: BTreeMap::new(),
+            pinned_publisher_uid: String::new(),
+            pinned_key_fingerprint: String::new(),
+            pinned_sequence: 0,
         }
     }
 }
