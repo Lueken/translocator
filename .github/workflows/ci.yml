@@ -27,6 +27,37 @@ jobs:
         with:
           node-version: 20
           cache: npm
+      # The version lives in three files and they feed different consumers, so
+      # a partial bump does not look broken, it looks fine and behaves wrong.
+      # tauri.conf.json decides what the installer and the updater manifest
+      # call themselves. Cargo.toml is what env!("CARGO_PKG_VERSION") compiles
+      # in, which is the number the min_launcher_version gate compares a pack
+      # against and the number the Hub logs as the client version. They sat at
+      # 0.2.4 and 0.1.0 respectively through four releases: every install was
+      # gated as though the launcher were 0.1.0 and the Hub recorded every user
+      # as such. Nothing failed, which is exactly why it lasted.
+      #
+      # Runs before `npm ci` so a mismatch costs seconds, and uses node rather
+      # than jq so the same command can be run locally to check a bump.
+      - name: versions must agree
+        run: |
+          read_json() { node -p "require('./$1').version ?? ''"; }
+          pkg=$(read_json package.json)
+          conf=$(read_json src-tauri/tauri.conf.json)
+          # The [package] version specifically: dependencies carry their own
+          # `version =` lines further down the file.
+          cargo=$(sed -n '/^\[package\]/,/^\[/{s/^version[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p}' src-tauri/Cargo.toml)
+          echo "package.json      ${pkg:-<unreadable>}"
+          echo "tauri.conf.json   ${conf:-<unreadable>}"
+          echo "Cargo.toml        ${cargo:-<unreadable>}"
+          if [ -z "$pkg" ] || [ -z "$conf" ] || [ -z "$cargo" ]; then
+            echo "::error::could not read one of the three versions, so this check proves nothing. Fix the parsing above."
+            exit 1
+          fi
+          if [ "$pkg" != "$conf" ] || [ "$pkg" != "$cargo" ]; then
+            echo "::error::version mismatch. package.json, src-tauri/tauri.conf.json and src-tauri/Cargo.toml must all carry the same version."
+            exit 1
+          fi
       - run: npm ci
       # `npm run build` is `tsc && vite build`, so this typechecks and bundles.
       - run: npm run build
