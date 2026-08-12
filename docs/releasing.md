@@ -91,6 +91,131 @@ src-tauri/target/release/bundle/nsis/translocator_<version>_x64-setup.exe
 src-tauri/target/release/bundle/nsis/translocator_<version>_x64-setup.exe.sig
 ```
 
+## Authenticode signing (Azure Artifact Signing)
+
+Separate from the updater key above, and easy to confuse with it. This is the
+signature Windows checks to decide whether to show "Unknown publisher"; the
+minisign key is what the updater checks. Both have to be right.
+
+Live configuration:
+
+| | |
+|---|---|
+| Account | `LGDLLC`, resource group `Translocator`, region **eastus** |
+| Certificate profile | `LGDPublicTrust` (Public Trust) |
+| Endpoint | `https://eus.codesigning.azure.net` |
+| Certificate subject | `CN=Lueken Good Design LLC` |
+
+The endpoint **must** match the account's region. A mismatch returns 403 with an
+opaque `SignerSign()` failure.
+
+### The two local files, both gitignored
+
+`src-tauri/signing-metadata.local.json` is what the signing dlib reads:
+
+```json
+{
+  "Endpoint": "https://eus.codesigning.azure.net",
+  "CodeSigningAccountName": "LGDLLC",
+  "CertificateProfileName": "LGDPublicTrust",
+  "ExcludeCredentials": ["EnvironmentCredential", "ManagedIdentityCredential",
+    "WorkloadIdentityCredential", "SharedTokenCacheCredential",
+    "VisualStudioCredential", "VisualStudioCodeCredential",
+    "AzurePowerShellCredential", "AzureDeveloperCliCredential",
+    "InteractiveBrowserCredential"]
+}
+```
+
+`src-tauri/sign.local.cmd` runs signtool. It exists because **Tauri splits
+`signCommand` on whitespace to find the program**, so an executable path
+containing spaces is parsed as the program `"C:\Program` and the build dies
+with:
+
+```
+failed to bundle project: `The filename, directory name, or volume label syntax is incorrect. (os error 123)`
+```
+
+`os error 123` is `ERROR_INVALID_NAME` and says nothing about quoting. Tauri's
+documented example uses a program with no spaces in its path, so the case is not
+handled. A wrapper at a space-free path avoids it entirely:
+
+```bat
+@echo off
+"C:\Program Files (x86)\Windows Kits\10\bin\10.0.26100.0\x64\signtool.exe" sign /v /fd SHA256 /tr http://timestamp.acs.microsoft.com /td SHA256 /dlib "%LOCALAPPDATA%\Microsoft\MicrosoftArtifactSigningClientTools\Azure.CodeSigning.Dlib.dll" /dmdf "<repo>\src-tauri\signing-metadata.local.json" "%~1"
+```
+
+`%~1` strips any quotes Tauri added so the re-quoting here handles paths with
+spaces of their own. The wrapper must exit 0; that is what Tauri checks.
+
+`src-tauri/signing.local.json` just points at it, and is merged in at build time
+so `tauri.conf.json` stays free of machine-specific paths and anyone can build
+this repo without an Azure account:
+
+```json
+{ "bundle": { "windows": { "signCommand": "<repo>\\src-tauri\\sign.local.cmd %1" } } }
+```
+
+### Prerequisites, once per machine
+
+```powershell
+winget install -e --id Microsoft.Azure.ArtifactSigningClientTools
+winget install -e --id Microsoft.AzureCLI
+az login --tenant 9e9d5656-f244-49b0-840f-05bf00d323ab
+```
+
+The tenant must be given explicitly; a bare `az login` lands somewhere with no
+subscriptions, because this account is a guest
+(`systems_lueken-good.design#EXT#@...`).
+
+### Two things that cost an afternoon
+
+**`az` must be on the PATH of the process that runs signtool.** Authentication
+runs through `DefaultAzureCredential`, and the credential that works here,
+`AzureCliCredential`, shells out to `az`. If it cannot find it, the chain falls
+through to `InteractiveBrowserCredential`, which opens a browser against the
+wrong tenant and fails with "Selected user account does not exist in tenant
+'Microsoft Services'". Nothing in that message points at PATH. The
+`ExcludeCredentials` list above removes the browser fallback so this fails
+loudly instead.
+
+**Owner does not grant signing.** The role required is **Artifact Signing
+Certificate Profile Signer**, and Owner, Contributor and Identity Verifier all
+lack it. You can own the subscription and still get 403.
+
+### Timestamping is not optional
+
+Signing certificates are valid for **three days**. The timestamp
+countersignature from `http://timestamp.acs.microsoft.com` is what keeps signed
+binaries valid afterwards. Never drop `/tr`.
+
+### Test before building
+
+Signing a throwaway copy takes three seconds; a build takes minutes.
+
+```powershell
+signtool sign /v /fd SHA256 /tr http://timestamp.acs.microsoft.com /td SHA256 `
+  /dlib "<dlib>" /dmdf "<metadata>" copy-of-some.exe
+signtool verify /pa /v copy-of-some.exe
+```
+
+A good result reads `Issued to: Lueken Good Design LLC`, `Issued by: Microsoft
+ID Verified CS EOC CA 03`, and `Successfully verified`.
+
+### Building a signed release
+
+```powershell
+$env:TAURI_SIGNING_PRIVATE_KEY = "$HOME\.tauri\translocator-v2.key"
+$env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = 'single quotes, always'
+npm run tauri build -- --config src-tauri/signing.local.json
+```
+
+**Then check the updater signature against the signed installer.** Authenticode
+rewrites the bytes that the minisign `.sig` covers, so the `.sig` is only valid
+if it was produced after signing. Verify the shipped `.exe` against the `.sig`
+using the public key compiled into that build. If the order were ever wrong,
+every update would be rejected and you would hear it from users rather than from
+the build.
+
 ## Version numbers
 
 Three files carry the version and they feed different things:

@@ -26,3 +26,9 @@ src-tauri/icons/ios/
 *.njsproj
 *.sln
 *.sw?
+
+# Local signing config. Machine-specific paths and an Azure account name, kept
+# out of the repo so a contributor's `tauri build` never fails on a signtool or
+# dlib they do not have. Recreate from docs/releasing.md.
+*.local.json
+*.local.cmd
