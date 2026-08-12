@@ -84,7 +84,15 @@ pub struct ManifestMod {
     pub releaseid: Option<u64>,
     pub side: String,
     pub sha256: String,
+    /// Absent means required, matching the Hub and the signing payload. A
+    /// hard-required field here would turn an omitted flag into a parse failure
+    /// on a manifest all three implementations otherwise agree about.
+    #[serde(default = "yes")]
     pub required: bool,
+}
+
+fn yes() -> bool {
+    true
 }
 
 #[derive(Serialize, Deserialize, Clone)]

@@ -18,6 +18,7 @@ mod models;
 mod mods;
 mod optimum;
 mod pack_install;
+mod pack_verify;
 mod servers;
 mod session;
 mod signing;

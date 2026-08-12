@@ -94,6 +94,24 @@ pub async fn pack_manifest(
     id: &str,
     version: Option<&str>,
 ) -> Result<Manifest, String> {
+    pack_manifest_document(hub_url, id, version).await.map(|(_, m)| m)
+}
+
+/// The manifest as BOTH the document the Hub actually served and the typed view
+/// of it.
+///
+/// Signature verification has to run over the served document, never over a
+/// re-serialized `Manifest`. `Manifest` models the fields the launcher acts on
+/// and silently drops the rest, so a digest taken from what we kept would attest
+/// to a different document than the one the publisher signed: any field outside
+/// the struct could be changed in flight without disturbing the signature. The
+/// typed view is derived FROM the same value, so everything the launcher acts on
+/// is covered by whatever the digest covers.
+pub async fn pack_manifest_document(
+    hub_url: &str,
+    id: &str,
+    version: Option<&str>,
+) -> Result<(serde_json::Value, Manifest), String> {
     let mut url = format!("{}/api/packs/{}/manifest", base(hub_url), id);
     if let Some(v) = version.filter(|v| !v.is_empty()) {
         url.push_str(&format!("?version={v}"));
@@ -106,7 +124,42 @@ pub async fn pack_manifest(
     if !resp.status().is_success() {
         return Err(format!("Hub returned {} for that manifest", resp.status()));
     }
+    let body = resp
+        .bytes()
+        .await
+        .map_err(|e| format!("could not read that manifest: {e}"))?;
+    let value: serde_json::Value = serde_json::from_slice(&body)
+        .map_err(|e| format!("could not read that manifest: {e}"))?;
+    let typed: Manifest = serde_json::from_value(value.clone())
+        .map_err(|e| format!("could not read that manifest: {e}"))?;
+    Ok((value, typed))
+}
+
+/// The pack's signed verification document, pinned to one version.
+///
+/// Deliberately pinned rather than latest: the signature covers a specific
+/// version, and pairing a freshly published manifest with the previous
+/// version's document would fail verification for a reason that has nothing to
+/// do with the pack being untrustworthy.
+pub async fn pack_verification(
+    hub_url: &str,
+    id: &str,
+    version: &str,
+) -> Result<crate::pack_verify::VerificationDoc, String> {
+    let url = format!("{}/api/packs/{}/verify?version={}", base(hub_url), id, version);
+    let resp = client()
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| format!("could not reach the Hub: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(format!(
+            "the Hub returned {} instead of a signature for {id} {version}, so there is no way to \
+             tell who published it. Nothing was installed.",
+            resp.status()
+        ));
+    }
     resp.json()
         .await
-        .map_err(|e| format!("could not read that manifest: {e}"))
+        .map_err(|e| format!("could not read the signature for that pack: {e}"))
 }
