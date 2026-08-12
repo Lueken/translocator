@@ -554,4 +554,113 @@ mod tests {
         assert!(!strip_auth(&mut empty));
         assert!(!strip_server_passwords(&mut empty));
     }
+
+    /// A scratch installations root that cleans up after itself.
+    struct Scratch(std::path::PathBuf);
+    impl Scratch {
+        fn new(tag: &str) -> Self {
+            let dir = std::env::temp_dir().join(format!("tl-pins-{tag}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            Scratch(dir)
+        }
+        /// One installation folder with its translocator.json written.
+        fn install(&self, folder: &str, managed_by: &str, uid: &str, fp: &str, seq: u64) {
+            let dir = self.0.join(folder);
+            std::fs::create_dir_all(&dir).unwrap();
+            let meta = InstallationMeta {
+                name: folder.into(),
+                managed_by: managed_by.into(),
+                pinned_publisher_uid: uid.into(),
+                pinned_key_fingerprint: fp.into(),
+                pinned_sequence: seq,
+                ..Default::default()
+            };
+            write_meta(&dir, &meta).unwrap();
+        }
+    }
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// The pin is only worth anything if it is found again. This is the lookup
+    /// that makes a second install of a pack answer to the first one's pins,
+    /// so the fields being written correctly (verified by hand on a real
+    /// install) proves only half of it.
+    #[test]
+    fn pins_are_found_again_scoped_to_their_own_pack() {
+        let s = Scratch::new("scoped");
+        s.install("quire-old", "the-quire@0.1.5", "uid-venah", "ed25519:aaaa", 100);
+        s.install("other", "some-other-pack@2.0.0", "uid-stranger", "ed25519:cccc", 999);
+        s.install("personal", "", "", "", 0); // not pack-managed at all
+
+        let p = pins_for_pack(&s.0, "the-quire");
+        assert_eq!(p.uid, "uid-venah");
+        assert_eq!(p.key_fingerprint, "ed25519:aaaa");
+        assert_eq!(p.sequence, 100);
+
+        // A different pack's pins must not leak in, or one publisher could
+        // constrain another's packs.
+        assert_eq!(pins_for_pack(&s.0, "some-other-pack").uid, "uid-stranger");
+        assert_eq!(pins_for_pack(&s.0, "never-installed"), crate::pack_verify::Pins::default());
+    }
+
+    /// Two installs of one pack, disagreeing. The newer pin identifies the
+    /// publisher, and the sequence floor is the highest seen anywhere so a
+    /// downgrade cannot be laundered through the older install.
+    #[test]
+    fn the_newest_install_speaks_for_the_pack_and_the_sequence_floor_is_the_highest() {
+        let s = Scratch::new("newest");
+        s.install("quire-a", "the-quire@0.1.5", "uid-old", "ed25519:aaaa", 100);
+        s.install("quire-b", "the-quire@0.1.6", "uid-new", "ed25519:bbbb", 500);
+
+        let p = pins_for_pack(&s.0, "the-quire");
+        assert_eq!(p.uid, "uid-new", "the more recent pin states who is trusted now");
+        assert_eq!(p.key_fingerprint, "ed25519:bbbb");
+        assert_eq!(p.sequence, 500, "the floor is the highest sequence on the machine");
+
+        // And that floor is what refuses a replayed older release.
+        let replay = crate::pack_verify::VerifiedPack {
+            uid: "uid-new".into(),
+            key_fingerprint: "ed25519:bbbb".into(),
+            sequence: 100,
+            publisher_name: "Venah".into(),
+        };
+        assert!(crate::pack_verify::check_pins(&p, &replay).is_err());
+    }
+
+    /// An install carrying no pins (made before pinning existed) must not be
+    /// mistaken for a pin of empty strings, which would match nothing and
+    /// block every future install of that pack.
+    #[test]
+    fn an_unpinned_install_does_not_become_an_impossible_pin() {
+        let s = Scratch::new("unpinned");
+        s.install("quire-legacy", "the-quire@0.1.5", "", "", 0);
+        let p = pins_for_pack(&s.0, "the-quire");
+        assert_eq!(p, crate::pack_verify::Pins::default());
+
+        let v = crate::pack_verify::VerifiedPack {
+            uid: "uid-venah".into(),
+            key_fingerprint: "ed25519:aaaa".into(),
+            sequence: 42,
+            publisher_name: "Venah".into(),
+        };
+        assert!(crate::pack_verify::check_pins(&p, &v).is_ok(), "must still be trust on first use");
+    }
+
+    /// A pinned install alongside an unpinned one: the real pin has to win
+    /// regardless of which order the directory happens to be read in.
+    #[test]
+    fn a_real_pin_is_not_lost_next_to_an_unpinned_install() {
+        let s = Scratch::new("mixed");
+        // The unpinned one has the higher sequence, so a naive "newest wins"
+        // that ignored emptiness would drop the real pin.
+        s.install("quire-legacy", "the-quire@0.1.5", "", "", 0);
+        s.install("quire-pinned", "the-quire@0.1.6", "uid-venah", "ed25519:aaaa", 7);
+        let p = pins_for_pack(&s.0, "the-quire");
+        assert_eq!(p.uid, "uid-venah");
+        assert_eq!(p.key_fingerprint, "ed25519:aaaa");
+    }
 }
