@@ -802,6 +802,16 @@ async fn curate_pack(
     if pack.min_launcher_version.trim().is_empty() {
         pack.min_launcher_version = env!("CARGO_PKG_VERSION").to_string();
     }
+    // Stamp the v3 revision counter here rather than trusting whatever the
+    // frontend round-tripped: curating IS the moment a new revision exists, and
+    // a sequence that can be edited is not a sequence. Unix seconds is
+    // monotonic in practice and needs no coordination with the Hub. A "New
+    // version" of an existing pack therefore always outranks what came before,
+    // because it is curated later.
+    pack.sequence = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .map_err(|_| "system clock is before 1970; cannot stamp a pack sequence".to_string())?;
     // Image URLs must be https (the Hub enforces the same; the webview CSP
     // additionally only renders images from the Cloudinary CDN).
     if pack.gallery.len() > 8 {
