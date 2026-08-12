@@ -13,7 +13,7 @@
 //! publish envelope, so the Hub canonicalizes the same document it received.
 
 use base64::Engine;
-use ed25519_dalek::{Signer, SigningKey};
+use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use sha2::{Digest, Sha256};
 use tauri::AppHandle;
 
@@ -63,6 +63,65 @@ pub fn fingerprint(key: &SigningKey) -> String {
 /// Sign arbitrary payload bytes; base64 of the 64-byte signature.
 pub fn sign(key: &SigningKey, payload: &str) -> String {
     b64(&key.sign(payload.as_bytes()).to_bytes())
+}
+
+/// Decode a base64 raw 32-byte Ed25519 public key, as the Hub stores and
+/// serves them. Rejects anything that is not exactly 32 bytes rather than
+/// padding or truncating, because a key that is silently reshaped is a key
+/// that verifies the wrong thing.
+pub fn decode_public_key(public_key_b64: &str) -> Result<VerifyingKey, String> {
+    let raw = base64::engine::general_purpose::STANDARD
+        .decode(public_key_b64.trim())
+        .map_err(|e| format!("public key is not valid base64: {e}"))?;
+    let bytes: [u8; 32] = raw
+        .try_into()
+        .map_err(|_| "public key is not 32 bytes".to_string())?;
+    VerifyingKey::from_bytes(&bytes).map_err(|e| format!("public key is not a valid Ed25519 point: {e}"))
+}
+
+/// Fingerprint of a public key in the Hub's form, computed from the raw bytes
+/// so it does not depend on how the key was encoded in transit.
+pub fn fingerprint_of(key: &VerifyingKey) -> String {
+    let digest = Sha256::digest(key.as_bytes());
+    let hex: String = digest.iter().map(|b| format!("{b:02x}")).collect();
+    format!("ed25519:{}", &hex[..32])
+}
+
+/// Does `signature_b64` verify `payload` under `public_key_b64`?
+///
+/// Returns a plain bool on purpose: every failure mode here means the same
+/// thing to a caller (do not trust this document), and a Result invites
+/// somebody to `unwrap_or(true)` or log the error and carry on. There is no
+/// input for which this should return true by default, including malformed
+/// base64, a wrong-length key, or a wrong-length signature.
+pub fn verify(public_key_b64: &str, payload: &str, signature_b64: &str) -> bool {
+    let Ok(key) = decode_public_key(public_key_b64) else {
+        return false;
+    };
+    let Ok(raw_sig) = base64::engine::general_purpose::STANDARD.decode(signature_b64.trim()) else {
+        return false;
+    };
+    let Ok(sig_bytes) = <[u8; 64]>::try_from(raw_sig) else {
+        return false;
+    };
+    // verify_strict rejects signatures under small-order or torsion-component
+    // public keys, which plain verify accepts. Those are the keys for which a
+    // single signature can validate under more than one key, and we are about
+    // to decide "did THIS publisher sign it" on the answer.
+    key.verify_strict(payload.as_bytes(), &Signature::from_bytes(&sig_bytes))
+        .is_ok()
+}
+
+/// Verify against a set of candidate keys, returning the fingerprint of the one
+/// that matched. A publisher can have several device keys registered, and any
+/// of them signing is legitimate.
+pub fn verify_any(public_keys_b64: &[String], payload: &str, signature_b64: &str) -> Option<String> {
+    for pk in public_keys_b64 {
+        if verify(pk, payload, signature_b64) {
+            return decode_public_key(pk).ok().map(|k| fingerprint_of(&k));
+        }
+    }
+    None
 }
 
 /// RFC 8785-style canonical JSON: object keys sorted, no insignificant
@@ -219,6 +278,68 @@ mod tests {
             "1c950024e83f4a66aa5949bfa37bfb920524bc49e41a8ef89071e417b829eac6",
             "signing payload diverged from the Hub"
         );
+    }
+
+    fn test_key(seed_byte: u8) -> SigningKey {
+        SigningKey::from_bytes(&[seed_byte; 32])
+    }
+
+    #[test]
+    fn a_real_signature_verifies_and_nothing_else_does() {
+        let key = test_key(7);
+        let pk = public_key_b64(&key);
+        let payload = signing_payload(&shared_vector(), "uid-abc-123").unwrap();
+        let sig = sign(&key, &payload);
+
+        assert!(verify(&pk, &payload, &sig), "a genuine signature must verify");
+
+        // Every way this can go wrong must be false, not an error a caller can
+        // shrug off. These are the cases an attacker actually supplies.
+        let other = public_key_b64(&test_key(9));
+        assert!(!verify(&other, &payload, &sig), "wrong key");
+        assert!(!verify(&pk, &format!("{payload}\n"), &sig), "trailing newline is tampering");
+        let mut swapped = payload.clone();
+        swapped = swapped.replace("100:client:req:", "100:client:opt:");
+        assert!(!verify(&pk, &swapped, &sig), "flipping required must break it");
+        let tampered_hash = payload.replace("be6fdfdb", "be6fdfdc");
+        assert!(!verify(&pk, &tampered_hash, &sig), "manifest digest is covered");
+        let downgraded = payload.replace("1786500000", "1786499999");
+        assert!(!verify(&pk, &downgraded, &sig), "sequence is covered");
+
+        assert!(!verify("not base64!!", &payload, &sig), "malformed key");
+        assert!(!verify(&pk, &payload, "not base64!!"), "malformed signature");
+        assert!(!verify(&pk, &payload, ""), "empty signature");
+        assert!(!verify("", &payload, &sig), "empty key");
+        // A 31-byte key must be refused rather than padded into something.
+        let short = b64(&[1u8; 31]);
+        assert!(!verify(&short, &payload, &sig), "short key");
+    }
+
+    #[test]
+    fn verify_any_finds_the_signing_key_among_several() {
+        let signer = test_key(3);
+        let payload = "anything at all";
+        let sig = sign(&signer, payload);
+        let keys = vec![
+            public_key_b64(&test_key(1)),
+            public_key_b64(&test_key(2)),
+            public_key_b64(&signer),
+        ];
+        let matched = verify_any(&keys, payload, &sig).expect("one of the keys signed it");
+        assert_eq!(matched, fingerprint(&signer), "reported the wrong key");
+
+        let strangers = vec![public_key_b64(&test_key(1)), public_key_b64(&test_key(2))];
+        assert!(verify_any(&strangers, payload, &sig).is_none(), "no key signed it");
+        assert!(verify_any(&[], payload, &sig).is_none(), "an empty key list must never pass");
+    }
+
+    /// The two fingerprint helpers must agree, since one is used when
+    /// registering a key and the other when reporting which key verified.
+    #[test]
+    fn fingerprints_agree_between_private_and_public_paths() {
+        let key = test_key(42);
+        let pk = decode_public_key(&public_key_b64(&key)).unwrap();
+        assert_eq!(fingerprint(&key), fingerprint_of(&pk));
     }
 
     /// The shared v3 vector. Byte-for-byte the same input the Hub's
