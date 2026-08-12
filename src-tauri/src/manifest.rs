@@ -28,6 +28,16 @@ pub struct ManifestPack {
     pub tags: Vec<String>,
     pub game_version: String,
     pub min_launcher_version: String,
+    /// Monotonic revision counter, signed as part of the v3 payload: Unix
+    /// seconds at the moment the manifest was curated. Stamped by
+    /// `curate_pack`, never entered by hand.
+    ///
+    /// The publisher picks it rather than the Hub, so the Hub cannot decide
+    /// which revision of a pack looks newest. An installed pack remembers the
+    /// highest sequence it has seen and refuses anything lower, which is what
+    /// stops a genuine older release being replayed as the current one.
+    #[serde(default)]
+    pub sequence: u64,
     /// Self-contained pack: the manifest defines the entire Mods folder.
     /// Spec default is false; signed into the pack payload, so omitted-when-
     /// false keeps the wire form and the signature consistent.
